@@ -18,44 +18,46 @@ You upload a list of players, or a CSV file containing a list of players and the
 
 ```
 pickledraw/
-├── index.php           # Main application entry point
-├── export.php          # CSV export handler
+├── index.php           # Main 3-step UI (import → configure → draw)
+├── export.php          # CSV download of the generated draw
 ├── css/
-│   └── style.css       # Stylesheet
+│   └── style.css       # Stylesheet (dark green pickleball theme)
 ├── js/
-│   └── app.js          # Client-side interactivity
+│   └── app.js          # Client-side: drag-drop, sample data, interactions
 └── php/
-    ├── CSVParser.php   # Parses delimited player data
-    └── DrawEngine.php  # Team matching + draw generation
+    ├── CSVParser.php   # Parses Eventbrite-style attendee CSV exports
+    └── DrawEngine.php  # Team pairing, skill grouping, match generation
 ```
 
 ---
 
-## CSV / Data Format
+## CSV Format
 
-**Minimum required columns** (in any order, with or without a header row):
+Pickledraw expects the following columns (standard Eventbrite attendee export):
 
-| Column       | Description                                  | Example          |
-|--------------|----------------------------------------------|------------------|
-| Player Name  | Full name of the player                      | `Alice Thompson` |
-| Skill Level  | Numeric rating from 1 (beginner) to 10 (pro) | `8.5`            |
-| Partner Name | Exact name of their doubles partner          | `Ben Clarke`     |
-
-**Example CSV:**
-```csv
-Player Name,Skill,Partner
-Alice Thompson,8.5,Ben Clarke
-Ben Clarke,8,Alice Thompson
-Carol Wright,7.5,Dan Fisher
-...
-```
+| Column | Description |
+|--------|-------------|
+| `Date Created` | Order creation date |
+| `Order ID` | Eventbrite order reference |
+| `Purchaser User ID` | Purchaser's user ID |
+| `Attendee ID` | Individual attendee ID |
+| `Attendee First Name` | **Required** — player's first name |
+| `Attendee Last Name` | **Required** — player's last name |
+| `Status` | Attending / Not Attending / Cancelled etc. |
+| `Ticket Class` | e.g. Mixed Doubles, Men's Doubles, Women's Doubles |
+| `Ticket Class Price` | Ticket price |
+| `Is Guest` | Yes / No |
+| `Checked in` | Yes / No |
+| `Checked in Date` | Date/time of check-in |
+| `Name of partner(s)` | **Required** — full name of their doubles partner |
+| `I am registered to play in a tournament at this level.` | **Required** — skill rating (e.g. `3.5`, `4.0`, `3.5 - Intermediate`) |
 
 **Notes:**
-- Header row is auto-detected and can be skipped.
-- Supported delimiters: comma, semicolon, tab, pipe — auto-detected or selectable.
-- Partner pairing is bidirectional: both players must name each other as partner to be explicitly paired.
-- Players without a matched partner are automatically paired with someone of similar skill.
-- Odd players out receive a BYE note.
+- Columns can be in any order — Pickledraw maps them by name.
+- The header row is always expected.
+- Attendees with status `Cancelled`, `Refunded`, `Not Attending`, or `Deleted` are automatically excluded.
+- Partner matching is **one-way sufficient**: if Player A names Player B as partner, both are paired even if B left the field blank.
+- Players without a matched partner are **auto-paired** with someone of the closest skill level.
 
 ---
 
@@ -71,28 +73,23 @@ Carol Wright,7.5,Dan Fisher
 
 ## Skill Divisions
 
-Teams are grouped into divisions (A, B, C…) based on the average skill of both players. The number of bands (2–5) is configurable.
+Teams are grouped into divisions (A, B, C…) based on average player skill. Highest skill = Division A.
 
-| Band Setting | Divisions                       |
-|--------------|---------------------------------|
-| 2            | A (high), B (low)               |
-| 3            | A, B, C                         |
-| 4            | A, B, C, D                      |
-| 5            | Open / unrestricted banding     |
-
----
-
-## Exporting
-
-After generating a draw, click **⬇ Export CSV** to download the complete draw as a spreadsheet-ready CSV, including:
-- Team list with skill ratings and pairing status
-- Full match schedule per division and round
-- Empty score column for manual entry
+| Bands | Divisions |
+|-------|-----------|
+| 1 | All teams in one draw |
+| 2 | A (top 50%), B (bottom 50%) |
+| 3 | A, B, C |
+| 4 | A, B, C, D |
+| 5 | Five bands — open/competitive format |
 
 ---
 
-## Printing
+## Export & Print
 
-Click **🖨 Print** — the input forms and navigation are hidden in the print stylesheet, leaving only the draw results.
+After generating a draw:
+
+- **⬇ Export CSV** — downloads the full draw as a UTF-8 CSV (Excel-compatible), including the team list and all rounds with a blank Score column for manual entry.
+- **🖨 Print** — print-optimised stylesheet hides the import form, leaving only the draw output.
 
 ---

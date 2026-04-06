@@ -3,53 +3,155 @@ session_start();
 require_once 'php/DrawEngine.php';
 require_once 'php/CSVParser.php';
 
-$error = '';
-$success = '';
-$teams = [];
-$draws = [];
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function skillBandDisplay(string $band): string {
+    return match($band) {
+        'band-4p'  => '4.0+',
+        'band-35'  => '3.5–3.99',
+        'band-30'  => '3.0–3.49',
+        'band-25'  => '2.5–2.99',
+        'band-u25' => 'Under 2.5',
+        default    => $band,
+    };
+}
+
+function skillBandMidpoint(string $band): float {
+    return match($band) {
+        'band-4p'  => 4.5,
+        'band-35'  => 3.75,
+        'band-30'  => 3.25,
+        'band-25'  => 2.75,
+        'band-u25' => 2.0,
+        default    => 3.25,
+    };
+}
+
+function findPartnerIndexInData(array $parsedData, string $name): ?int {
+    if ($name === '') return null;
+    foreach ($parsedData as $i => $p) {
+        if (strcasecmp($p['name'], $name) === 0) return $i;
+    }
+    return null;
+}
+
+$error      = '';
+$teams      = [];
+$draws      = [];
 $parsedData = null;
+$warnings   = [];
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  POST HANDLERS
+// ─────────────────────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $parser = new CSVParser();
+    $action = $_POST['action'] ?? '';
 
-    if (isset($_POST['action']) && $_POST['action'] === 'parse') {
-        // Handle CSV upload or pasted data
+    // ── 1. PARSE CSV ──────────────────────────────────────────────────────────
+    if ($action === 'parse') {
         $rawData = '';
-
         if (!empty($_FILES['csv_file']['tmp_name'])) {
             $rawData = file_get_contents($_FILES['csv_file']['tmp_name']);
         } elseif (!empty($_POST['csv_text'])) {
             $rawData = trim($_POST['csv_text']);
         }
 
-        $delimiter = $_POST['delimiter'] ?? 'auto';
-
         if (empty($rawData)) {
             $error = 'Please upload a CSV file or paste delimited data.';
         } else {
             try {
-                $parsedData = $parser->parse($rawData, $delimiter);
+                $parser     = new CSVParser();
+                $parsedData = $parser->parse($rawData, $_POST['delimiter'] ?? 'auto');
                 $_SESSION['parsed_data'] = $parsedData;
-                $success = count($parsedData) . ' players parsed successfully.';
+                $_SESSION['draws']       = [];
+                $_SESSION['teams']       = [];
             } catch (Exception $e) {
-                $error = 'Parse error: ' . $e->getMessage();
+                $error = 'Import error: ' . $e->getMessage();
             }
         }
     }
 
-    if (isset($_POST['action']) && $_POST['action'] === 'generate') {
+    // ── 2. SAVE MANUAL PARTNER OVERRIDES, DIVISION OVERRIDES & DUPR ─────────
+    if ($action === 'save_pairings') {
+        $parsedData = $_SESSION['parsed_data'] ?? null;
+
+        if ($parsedData) {
+            // ── Division overrides ─────────────────────────────────────────
+            $divisionOverrides = $_POST['player_division'] ?? [];
+            foreach ($divisionOverrides as $playerIdx => $divVal) {
+                $playerIdx = (int)$playerIdx;
+                if (!isset($parsedData[$playerIdx])) continue;
+                $divVal = trim($divVal);
+                if ($divVal !== '') {
+                    $parsedData[$playerIdx]['skill_band']     = $divVal;
+                    // Update numeric skill to the midpoint of the chosen band
+                    $parsedData[$playerIdx]['skill']          = skillBandMidpoint($divVal);
+                    $parsedData[$playerIdx]['skill_raw']      = skillBandDisplay($divVal);
+                    $parsedData[$playerIdx]['division_manual'] = true;
+                }
+            }
+
+            // ── DUPR overrides ─────────────────────────────────────────────
+            $duprValues = $_POST['player_dupr'] ?? [];
+            foreach ($duprValues as $playerIdx => $dupr) {
+                $playerIdx = (int)$playerIdx;
+                if (!isset($parsedData[$playerIdx])) continue;
+                $dupr = trim($dupr);
+                // Accept blank (clear), or a positive number
+                if ($dupr === '' || is_numeric($dupr)) {
+                    $parsedData[$playerIdx]['dupr'] = $dupr === '' ? null : (float)$dupr;
+                }
+            }
+
+            // ── Partner overrides ──────────────────────────────────────────
+            foreach ($parsedData as &$p) {
+                if (!$p['partner_matched']) {
+                    $p['manual_partner'] = null;
+                }
+            }
+            unset($p);
+
+            $overrides = $_POST['manual_partner'] ?? [];
+            foreach ($overrides as $playerIdx => $partnerIdx) {
+                $playerIdx = (int)$playerIdx;
+                if (!isset($parsedData[$playerIdx])) continue;
+
+                if ($partnerIdx === 'auto' || $partnerIdx === '') {
+                    $parsedData[$playerIdx]['manual_partner']  = null;
+                    $parsedData[$playerIdx]['partner_matched'] = false;
+                    $parsedData[$playerIdx]['partner_resolved']= null;
+                } else {
+                    $partnerIdx = (int)$partnerIdx;
+                    if (!isset($parsedData[$partnerIdx])) continue;
+
+                    $parsedData[$playerIdx]['manual_partner']   = $partnerIdx;
+                    $parsedData[$playerIdx]['partner_matched']  = true;
+                    $parsedData[$playerIdx]['partner_resolved'] = $parsedData[$partnerIdx]['name'];
+
+                    $parsedData[$partnerIdx]['manual_partner']   = $playerIdx;
+                    $parsedData[$partnerIdx]['partner_matched']  = true;
+                    $parsedData[$partnerIdx]['partner_resolved'] = $parsedData[$playerIdx]['name'];
+                }
+            }
+
+            $_SESSION['parsed_data'] = $parsedData;
+        }
+        // Fall through — re-render with updated data
+    }
+
+    // ── 3. GENERATE DRAW ─────────────────────────────────────────────────────
+    if ($action === 'generate') {
         $parsedData = $_SESSION['parsed_data'] ?? null;
 
         if (empty($parsedData)) {
-            $error = 'No player data found. Please parse data first.';
+            $error = 'No player data found. Please import a CSV first.';
         } else {
             try {
                 $engine = new DrawEngine($parsedData);
                 $result = $engine->generateDraw([
-                    'rounds'         => (int)($_POST['rounds'] ?? 3),
-                    'skill_bands'    => (int)($_POST['skill_bands'] ?? 3),
-                    'format'         => $_POST['format'] ?? 'round_robin',
-                    'courts'         => (int)($_POST['courts'] ?? 4),
+                    'rounds'      => (int)($_POST['rounds'] ?? 3),
+                    'skill_bands' => (int)($_POST['skill_bands'] ?? 5),
+                    'format'      => $_POST['format'] ?? 'round_robin',
+                    'courts'      => (int)($_POST['courts'] ?? 4),
                 ]);
                 $teams = $result['teams'];
                 $draws = $result['draws'];
@@ -60,9 +162,126 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
     }
-}
 
-// Load from session if available
+    // ── 4. ADD PLAYER MANUALLY ────────────────────────────────────────────────
+    if ($action === 'add_player') {
+        $parsedData = $_SESSION['parsed_data'] ?? [];
+
+        $firstName = trim($_POST['new_first_name'] ?? '');
+        $lastName  = trim($_POST['new_last_name']  ?? '');
+        $band      = trim($_POST['new_division']   ?? 'band-30');
+        $dupr      = trim($_POST['new_dupr']       ?? '');
+        $partner   = trim($_POST['new_partner']    ?? '');
+
+        if ($firstName === '' && $lastName === '') {
+            $error = 'Please enter at least a first or last name.';
+        } else {
+            $fullName = trim("$firstName $lastName");
+
+            $newPlayer = [
+                'name'             => $fullName,
+                'first_name'       => $firstName,
+                'last_name'        => $lastName,
+                'skill'            => skillBandMidpoint($band),
+                'skill_raw'        => skillBandDisplay($band),
+                'skill_band'       => $band,
+                'partner'          => $partner ?: null,
+                'partner_matched'  => false,
+                'partner_resolved' => null,
+                'manual_partner'   => null,
+                'division_manual'  => true,
+                'dupr'             => ($dupr !== '' && is_numeric($dupr)) ? (float)$dupr : null,
+                'attendee_id'      => '',
+                'order_id'         => '',
+                'ticket_class'     => '',
+                'checked_in'       => false,
+                'status'           => 'Manual',
+                'team_id'          => null,
+            ];
+
+            // Try to match partner by name if provided
+            if ($partner !== '') {
+                foreach ($parsedData as $j => $p) {
+                    if (strcasecmp($p['name'], $partner) === 0) {
+                        $newPlayer['partner_matched']  = true;
+                        $newPlayer['partner_resolved'] = $p['name'];
+                        // Mirror on the existing player too
+                        $parsedData[$j]['partner_matched']  = true;
+                        $parsedData[$j]['partner_resolved'] = $fullName;
+                        $parsedData[$j]['manual_partner']   = count($parsedData); // will be new index
+                        break;
+                    }
+                }
+            }
+
+            $parsedData[] = $newPlayer;
+
+            // Fix the manual_partner index now we know the new player's index
+            $newIdx = array_key_last($parsedData);
+            foreach ($parsedData as $j => &$p) {
+                if (isset($p['manual_partner']) && $p['manual_partner'] === $newIdx - 1 && $j !== $newIdx) {
+                    // already pointing correctly via the count() above
+                    $p['manual_partner'] = $newIdx;
+                }
+            }
+            unset($p);
+
+            $_SESSION['parsed_data'] = $parsedData;
+            $_SESSION['draws']       = [];
+            $_SESSION['teams']       = [];
+        }
+    }
+
+    // ── 5. DELETE PLAYER ─────────────────────────────────────────────────────
+    if ($action === 'delete_player') {
+        $parsedData = $_SESSION['parsed_data'] ?? [];
+        $delIdx     = (int)($_POST['del_idx'] ?? -1);
+
+        if (isset($parsedData[$delIdx])) {
+            $deleted = $parsedData[$delIdx];
+
+            // Unlink their partner if they had one
+            if ($deleted['partner_matched']) {
+                foreach ($parsedData as $j => &$p) {
+                    if ($j === $delIdx) continue;
+                    if (
+                        (isset($p['manual_partner']) && $p['manual_partner'] === $delIdx) ||
+                        strcasecmp($p['partner_resolved'] ?? '', $deleted['name']) === 0 ||
+                        strcasecmp($p['name'], $deleted['partner_resolved'] ?? '') === 0
+                    ) {
+                        $p['partner_matched']  = false;
+                        $p['partner_resolved'] = null;
+                        $p['manual_partner']   = null;
+                    }
+                }
+                unset($p);
+            }
+
+            // Remove the player — use array_values to reindex
+            unset($parsedData[$delIdx]);
+            $parsedData = array_values($parsedData);
+
+            // Re-index any manual_partner references (they store array indices)
+            foreach ($parsedData as $j => &$p) {
+                if (isset($p['manual_partner']) && $p['manual_partner'] !== null) {
+                    if ($p['manual_partner'] > $delIdx) {
+                        $p['manual_partner']--;
+                    } elseif ($p['manual_partner'] === $delIdx) {
+                        $p['manual_partner']   = null;
+                        $p['partner_matched']  = false;
+                        $p['partner_resolved'] = null;
+                    }
+                }
+            }
+            unset($p);
+
+            $_SESSION['parsed_data'] = $parsedData;
+            $_SESSION['draws']       = [];
+            $_SESSION['teams']       = [];
+        }
+    }
+}
+// ── Load from session ─────────────────────────────────────────────────────────
 if (empty($teams) && !empty($_SESSION['teams'])) {
     $teams = $_SESSION['teams'];
     $draws = $_SESSION['draws'] ?? [];
@@ -70,13 +289,21 @@ if (empty($teams) && !empty($_SESSION['teams'])) {
 if (empty($parsedData) && !empty($_SESSION['parsed_data'])) {
     $parsedData = $_SESSION['parsed_data'];
 }
+
+// ── Counts ────────────────────────────────────────────────────────────────────
+$matchedCount   = $parsedData ? count(array_filter($parsedData, fn($p) => $p['partner_matched']))  : 0;
+$unmatchedCount = $parsedData ? count(array_filter($parsedData, fn($p) => !$p['partner_matched'])) : 0;
+
+// Build list of all attendees for the partner dropdowns
+// Only players not yet explicitly matched are available as options for any given player
+$allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p['name'], 'skill_raw' => $p['skill_raw'], 'partner_matched' => $p['partner_matched']], array_keys($parsedData), $parsedData) : [];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tournament Draw Generator</title>
+    <title>Pickledraw — Pickleball Tournament Draw Generator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
@@ -85,241 +312,480 @@ if (empty($parsedData) && !empty($_SESSION['parsed_data'])) {
 
 <div class="bg-grid"></div>
 
-<header class="site-header">
-    <div class="header-inner">
-        <div class="logo">
-            <span class="logo-icon">⬡</span>
-            <span class="logo-text">DRAWMASTER</span>
-            <span class="logo-sub">Tournament Engine</span>
-        </div>
-        <nav class="header-nav">
-            <a href="?reset=1" class="btn-ghost">Reset</a>
-        </nav>
-    </div>
-</header>
-
 <?php if (isset($_GET['reset'])) {
     session_destroy();
     header('Location: index.php');
     exit;
 } ?>
 
+<header class="site-header">
+    <div class="header-inner">
+        <div class="logo">
+            <span class="logo-icon">🥒</span>
+            <span class="logo-text">PICKLEDRAW</span>
+            <span class="logo-sub">Tournament Draw Generator</span>
+        </div>
+        <nav class="header-nav">
+            <?php if (!empty($parsedData)): ?>
+                <a href="?reset=1" class="btn-ghost">↺ Start Over</a>
+            <?php endif; ?>
+        </nav>
+    </div>
+</header>
+
 <main class="main-content">
 
-    <!-- STEP 1: DATA INPUT -->
-    <section class="step-section <?= !empty($parsedData) ? 'step-done' : 'step-active' ?>" id="step-input">
-        <div class="step-header">
-            <span class="step-num">01</span>
-            <div>
-                <h2 class="step-title">Import Player Data</h2>
-                <p class="step-desc">Upload a CSV or paste delimited data containing player names, skill levels, and partner names</p>
-            </div>
-            <?php if (!empty($parsedData)): ?>
-                <span class="step-badge">✓ <?= count($parsedData) ?> players loaded</span>
-            <?php endif; ?>
+<!-- ═══════════════════════════════════════════════════════════════════════
+     STEP 1 — IMPORT
+═══════════════════════════════════════════════════════════════════════ -->
+<section class="step-section <?= !empty($parsedData) ? 'step-done' : 'step-active' ?>" id="step-input">
+    <div class="step-header">
+        <span class="step-num">01</span>
+        <div>
+            <h2 class="step-title">Import Registration Data</h2>
+            <p class="step-desc">Upload your Eventbrite attendee CSV export or paste the data directly</p>
         </div>
+        <?php if (!empty($parsedData)): ?>
+            <span class="step-badge">✓ <?= count($parsedData) ?> attendees loaded</span>
+        <?php endif; ?>
+    </div>
 
-        <?php if (empty($parsedData)): ?>
-        <form method="POST" enctype="multipart/form-data" class="input-form">
-            <input type="hidden" name="action" value="parse">
+    <?php if (empty($parsedData)): ?>
+    <!-- ── Upload / paste form ── -->
+    <form method="POST" enctype="multipart/form-data" class="input-form">
+        <input type="hidden" name="action" value="parse">
 
-            <div class="form-grid">
-                <div class="form-col">
-                    <label class="form-label">Upload CSV File</label>
-                    <div class="file-drop-zone" id="dropZone">
-                        <input type="file" name="csv_file" id="csvFile" accept=".csv,.txt" class="file-input">
-                        <div class="file-drop-content">
-                            <span class="file-icon">⬆</span>
-                            <span class="file-text">Drop file here or <strong>click to browse</strong></span>
-                            <span class="file-hint">CSV, TXT — max 2MB</span>
-                        </div>
+        <div class="form-grid">
+            <div class="form-col">
+                <label class="form-label">Upload CSV File</label>
+                <div class="file-drop-zone" id="dropZone">
+                    <input type="file" name="csv_file" id="csvFile" accept=".csv,.txt" class="file-input">
+                    <div class="file-drop-content">
+                        <span class="file-icon">⬆</span>
+                        <span class="file-text">Drop file here or <strong>click to browse</strong></span>
+                        <span class="file-hint">CSV or TXT — standard Eventbrite export format</span>
                     </div>
                 </div>
-
-                <div class="form-divider"><span>OR</span></div>
-
-                <div class="form-col">
-                    <label class="form-label">Paste Delimited Data</label>
-                    <textarea name="csv_text" class="data-textarea" placeholder="PlayerName, SkillLevel, PartnerName&#10;Alice Smith, 7, Bob Jones&#10;Bob Jones, 6, Alice Smith&#10;Carol White, 8, Dave Brown&#10;..."></textarea>
-                </div>
             </div>
 
-            <div class="form-options">
-                <div class="option-group">
-                    <label class="form-label">Delimiter</label>
-                    <select name="delimiter" class="form-select">
-                        <option value="auto">Auto-detect</option>
-                        <option value=",">Comma (,)</option>
-                        <option value=";">Semicolon (;)</option>
-                        <option value="\t">Tab</option>
-                        <option value="|">Pipe (|)</option>
-                    </select>
-                </div>
+            <div class="form-divider"><span>OR</span></div>
 
-                <div class="option-group format-hint">
-                    <label class="form-label">Expected Format</label>
-                    <code class="format-code">PlayerName, SkillLevel (1-10), PartnerName</code>
-                    <p class="hint-text">First row can be a header — it'll be auto-detected and skipped.</p>
-                </div>
+            <div class="form-col">
+                <label class="form-label">Paste CSV Data</label>
+                <textarea name="csv_text" class="data-textarea"
+                    placeholder="Date Created,Order ID,Purchaser User ID,Attendee ID,Attendee First Name,Attendee Last Name,Status,Ticket Class,Ticket Class Price,Is Guest,Checked in,Checked in Date,Name of partner(s),I am registered to play in a tournament at this level.
+2024-01-15,ORD001,USR001,ATT001,Alice,Thompson,Attending,Mixed Doubles,45.00,No,No,,Bob Clarke,3.5
+..."></textarea>
+            </div>
+        </div>
+
+        <div class="form-options">
+            <div class="option-group">
+                <label class="form-label">Delimiter</label>
+                <select name="delimiter" class="form-select">
+                    <option value="auto">Auto-detect</option>
+                    <option value=",">Comma (,)</option>
+                    <option value=";">Semicolon (;)</option>
+                    <option value="\t">Tab</option>
+                    <option value="|">Pipe (|)</option>
+                </select>
             </div>
 
-            <?php if ($error): ?>
-                <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
-            <?php endif; ?>
-
-            <div class="sample-section">
-                <button type="button" class="btn-ghost" onclick="loadSample()">Load Sample Data</button>
+            <div class="option-group format-hint">
+                <label class="form-label">Expected Column Format</label>
+                <code class="format-code">Date Created · Order ID · Purchaser User ID · Attendee ID · Attendee First Name · Attendee Last Name · Status · Ticket Class · Ticket Class Price · Is Guest · Checked in · Checked in Date · Name of partner(s) · I am registered to play in a tournament at this level.</code>
+                <p class="hint-text">Columns can be in any order. Cancelled / refunded attendees are automatically excluded.</p>
             </div>
+        </div>
 
-            <button type="submit" class="btn-primary">Parse Players →</button>
-        </form>
-        <?php else: ?>
+        <?php if ($error): ?>
+            <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
+        <?php endif; ?>
+
+        <div class="sample-section">
+            <button type="button" class="btn-ghost" onclick="loadSample()">Load Sample Data</button>
+        </div>
+
+        <button type="submit" class="btn-primary">Import Players →</button>
+    </form>
+
+    <?php else: /* ── Parsed data preview with pairing overrides ── */ ?>
+
+    <div class="import-stats">
+        <div class="stat-pill stat-green">✓ <?= $matchedCount ?> players paired</div>
+        <?php if ($unmatchedCount > 0): ?>
+            <div class="stat-pill stat-amber">⚠ <?= $unmatchedCount ?> need pairing assignment</div>
+        <?php endif; ?>
+        <div class="stat-pill stat-blue"><?= count($parsedData) ?> total attendees</div>
+    </div>
+
+    <form method="POST" class="pairing-form" id="pairingForm">
+        <input type="hidden" name="action" value="save_pairings">
+
         <div class="parsed-preview">
-            <table class="data-table">
+            <table class="data-table" id="attendeeTable">
                 <thead>
-                    <tr><th>#</th><th>Player</th><th>Skill</th><th>Partner</th><th>Status</th></tr>
+                    <tr>
+                        <th>#</th>
+                        <th>Attendee</th>
+                        <th>Tournament Division</th>
+                        <th>DUPR Rating</th>
+                        <th>Partner Declared</th>
+                        <th>Pairing</th>
+                        <th class="th-actions"></th>
+                    </tr>
                 </thead>
                 <tbody>
-                    <?php foreach (array_slice($parsedData, 0, 10) as $i => $player): ?>
-                    <tr>
+                    <?php foreach ($parsedData as $i => $player): ?>
+                    <tr class="<?= $player['partner_matched'] ? 'row-matched' : 'row-unmatched' ?>"
+                        data-player-idx="<?= $i ?>"
+                        data-player-name="<?= htmlspecialchars($player['name'], ENT_QUOTES) ?>"
+                        <?= ($player['status'] ?? '') === 'Manual' ? 'data-manual="1"' : '' ?>>
+
                         <td class="td-num"><?= $i + 1 ?></td>
-                        <td><?= htmlspecialchars($player['name']) ?></td>
-                        <td><span class="skill-badge skill-<?= $player['skill_band'] ?>"><?= $player['skill'] ?></span></td>
-                        <td><?= htmlspecialchars($player['partner'] ?? '—') ?></td>
-                        <td><span class="status-dot <?= $player['partner_matched'] ? 'matched' : 'unmatched' ?>"></span><?= $player['partner_matched'] ? 'Paired' : 'Solo' ?></td>
+
+                        <td>
+                            <strong><?= htmlspecialchars($player['name']) ?></strong>
+                            <?php if ($player['attendee_id']): ?>
+                                <span class="meta-id">#<?= htmlspecialchars($player['attendee_id']) ?></span>
+                            <?php endif; ?>
+                        </td>
+
+                        <td class="td-division">
+                            <select name="player_division[<?= $i ?>]"
+                                    class="division-select division-<?= $player['skill_band'] ?>"
+                                    onchange="onDivisionChange(this)">
+                                <option value="band-u25" <?= $player['skill_band'] === 'band-u25' ? 'selected' : '' ?>>Under 2.5</option>
+                                <option value="band-25"  <?= $player['skill_band'] === 'band-25'  ? 'selected' : '' ?>>2.5 – 2.99</option>
+                                <option value="band-30"  <?= $player['skill_band'] === 'band-30'  ? 'selected' : '' ?>>3.0 – 3.49</option>
+                                <option value="band-35"  <?= $player['skill_band'] === 'band-35'  ? 'selected' : '' ?>>3.5 – 3.99</option>
+                                <option value="band-4p"  <?= $player['skill_band'] === 'band-4p'  ? 'selected' : '' ?>>4.0+</option>
+                            </select>
+                            <span class="division-src" title="From CSV: <?= htmlspecialchars($player['skill_raw']) ?>">
+                                <?= isset($player['division_manual']) ? '✎' : '↑CSV' ?>
+                            </span>
+                        </td>
+
+                        <td class="td-dupr">
+                            <input type="text"
+                                   name="player_dupr[<?= $i ?>]"
+                                   class="dupr-input"
+                                   value="<?= htmlspecialchars($player['dupr'] ?? '') ?>"
+                                   placeholder="e.g. 3.42"
+                                   maxlength="6"
+                                   pattern="[0-9]+(\.[0-9]{1,2})?"
+                                   title="Enter individual DUPR rating (e.g. 3.42)"
+                                   onchange="onDuprChange(this)">
+                        </td>
+
+                        <td class="td-partner">
+                            <?= htmlspecialchars($player['partner'] ?? '—') ?>
+                        </td>
+
+                        <td class="td-pairing">
+                            <?php if ($player['partner_matched']): ?>
+                                <!-- Confirmed match — show name with option to change -->
+                                <div class="pairing-confirmed">
+                                    <span class="status-dot matched"></span>
+                                    <span class="pair-label">
+                                        <?= htmlspecialchars($player['partner_resolved'] ?? $player['partner'] ?? '') ?>
+                                    </span>
+                                    <button type="button" class="btn-unlink"
+                                        onclick="unlinkPlayer(<?= $i ?>)"
+                                        title="Remove this pairing">✕</button>
+                                </div>
+                                <!-- Hidden field preserves the match on submit -->
+                                <input type="hidden"
+                                    name="manual_partner[<?= $i ?>]"
+                                    id="partner_input_<?= $i ?>"
+                                    value="<?= findPartnerIndexInData($parsedData, $player['partner_resolved'] ?? '') ?? 'auto' ?>">
+                            <?php else: ?>
+                                <!-- Unmatched — show dropdown -->
+                                <div class="pairing-select-wrap">
+                                    <span class="status-dot unmatched"></span>
+                                    <select name="manual_partner[<?= $i ?>]"
+                                            id="partner_select_<?= $i ?>"
+                                            class="partner-select"
+                                            data-player-idx="<?= $i ?>"
+                                            onchange="onPartnerChange(this)">
+                                        <option value="auto">⟳ Auto-pair by skill</option>
+                                        <optgroup label="── Select a partner ──">
+                                        <?php foreach ($parsedData as $j => $other): ?>
+                                            <?php if ($j === $i) continue; ?>
+                                            <option value="<?= $j ?>"
+                                                <?= (isset($player['manual_partner']) && $player['manual_partner'] === $j) ? 'selected' : '' ?>>
+                                                <?= htmlspecialchars($other['name']) ?>
+                                                (<?= htmlspecialchars($other['skill_raw']) ?>)
+                                                <?= $other['partner_matched'] ? ' ✓paired' : '' ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                        </optgroup>
+                                    </select>
+                                </div>
+                            <?php endif; ?>
+                        </td>
+                        <td class="td-actions">
+                            <button type="button"
+                                    class="btn-delete-player"
+                                    title="Remove <?= htmlspecialchars($player['name'], ENT_QUOTES) ?>"
+                                    onclick="confirmDeletePlayer(<?= $i ?>, '<?= htmlspecialchars(addslashes($player['name']), ENT_QUOTES) ?>')">
+                                🗑
+                            </button>
+                        </td>
                     </tr>
                     <?php endforeach; ?>
-                    <?php if (count($parsedData) > 10): ?>
-                    <tr><td colspan="5" class="td-more">+ <?= count($parsedData) - 10 ?> more players...</td></tr>
-                    <?php endif; ?>
                 </tbody>
             </table>
-            <a href="?reset=1" class="btn-ghost btn-sm">← Re-import</a>
         </div>
+
+        <?php if ($error): ?>
+            <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
-    </section>
 
-    <!-- STEP 2: DRAW SETTINGS -->
-    <?php if (!empty($parsedData)): ?>
-    <section class="step-section <?= !empty($draws) ? 'step-done' : 'step-active' ?>" id="step-settings">
-        <div class="step-header">
-            <span class="step-num">02</span>
-            <div>
-                <h2 class="step-title">Configure Draw</h2>
-                <p class="step-desc">Set the format, rounds and court count for the tournament</p>
-            </div>
+        <div class="pairing-actions">
+            <a href="?reset=1" class="btn-ghost btn-sm">← Re-import</a>
+            <button type="button" class="btn-add-player" onclick="openAddPlayerModal()">+ Add Player</button>
+            <button type="submit" class="btn-primary">Confirm Pairings &amp; Continue →</button>
         </div>
+    </form>
 
-        <form method="POST" class="settings-form">
-            <input type="hidden" name="action" value="generate">
-
-            <div class="settings-grid">
-                <div class="setting-card">
-                    <label class="form-label">Format</label>
-                    <select name="format" class="form-select">
-                        <option value="round_robin">Round Robin</option>
-                        <option value="elimination">Single Elimination</option>
-                        <option value="pools">Pool Play + Finals</option>
-                    </select>
-                </div>
-                <div class="setting-card">
-                    <label class="form-label">Rounds</label>
-                    <input type="number" name="rounds" value="3" min="1" max="10" class="form-input">
-                </div>
-                <div class="setting-card">
-                    <label class="form-label">Courts Available</label>
-                    <input type="number" name="courts" value="4" min="1" max="20" class="form-input">
-                </div>
-                <div class="setting-card">
-                    <label class="form-label">Skill Bands</label>
-                    <select name="skill_bands" class="form-select">
-                        <option value="2">2 (A/B)</option>
-                        <option value="3" selected>3 (A/B/C)</option>
-                        <option value="4">4 (A/B/C/D)</option>
-                        <option value="5">5 (Open)</option>
-                    </select>
-                </div>
-            </div>
-
-            <?php if ($error): ?>
-                <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
-            <?php endif; ?>
-
-            <button type="submit" class="btn-primary">Generate Draw →</button>
-        </form>
-    </section>
+    <!-- Hidden form for deleting a player (separate POST from the main pairing form) -->
+    <form id="deletePlayerForm" method="POST" style="display:none">
+        <input type="hidden" name="action" value="delete_player">
+        <input type="hidden" name="del_idx" id="deletePlayerIdx" value="">
+    </form>
     <?php endif; ?>
+</section>
 
-    <!-- STEP 3: DRAW OUTPUT -->
-    <?php if (!empty($draws)): ?>
-    <section class="step-section step-active" id="step-draw">
-        <div class="step-header">
-            <span class="step-num">03</span>
-            <div>
-                <h2 class="step-title">Tournament Draw</h2>
-                <p class="step-desc"><?= count($teams) ?> teams across <?= count($draws) ?> division(s)</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     STEP 2 — CONFIGURE DRAW
+═══════════════════════════════════════════════════════════════════════ -->
+<?php if (!empty($parsedData)): ?>
+<section class="step-section <?= !empty($draws) ? 'step-done' : 'step-active' ?>" id="step-settings">
+    <div class="step-header">
+        <span class="step-num">02</span>
+        <div>
+            <h2 class="step-title">Configure Draw</h2>
+            <p class="step-desc">Choose format, rounds, courts, and skill divisions</p>
+        </div>
+    </div>
+
+    <form method="POST" class="settings-form">
+        <input type="hidden" name="action" value="generate">
+
+        <div class="settings-grid">
+            <div class="setting-card">
+                <label class="form-label">Format</label>
+                <select name="format" class="form-select">
+                    <option value="round_robin">Round Robin</option>
+                    <option value="elimination">Single Elimination</option>
+                    <option value="pools">Pool Play + Finals</option>
+                </select>
             </div>
-            <div class="draw-actions">
-                <button onclick="window.print()" class="btn-ghost">🖨 Print</button>
-                <a href="export.php" class="btn-ghost">⬇ Export CSV</a>
+            <div class="setting-card">
+                <label class="form-label">Rounds</label>
+                <input type="number" name="rounds" value="3" min="1" max="10" class="form-input">
+            </div>
+            <div class="setting-card">
+                <label class="form-label">Courts Available</label>
+                <input type="number" name="courts" value="4" min="1" max="20" class="form-input">
+            </div>
+            <div class="setting-card">
+                <label class="form-label">Skill Divisions</label>
+                <select name="skill_bands" class="form-select">
+                    <option value="1">1 — All play together</option>
+                    <option value="2">2 — A / B</option>
+                    <option value="3">3 — A / B / C</option>
+                    <option value="4">4 — A / B / C / D</option>
+                    <option value="5" selected>5 — By pickleball rating</option>
+                </select>
             </div>
         </div>
 
-        <?php foreach ($draws as $divName => $divData): ?>
-        <div class="division-block">
-            <div class="division-header">
-                <span class="division-badge"><?= htmlspecialchars($divName) ?></span>
-                <span class="division-info"><?= count($divData['teams']) ?> teams · Skill avg <?= $divData['avg_skill'] ?></span>
-            </div>
+        <?php if ($error): ?>
+            <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
+        <?php endif; ?>
 
-            <!-- Teams in this division -->
-            <div class="teams-row">
-                <?php foreach ($divData['teams'] as $team): ?>
-                <div class="team-chip">
-                    <span class="team-num"><?= $team['id'] ?></span>
-                    <span class="team-names"><?= htmlspecialchars($team['player1']) ?> &amp; <?= htmlspecialchars($team['player2']) ?></span>
+        <button type="submit" class="btn-primary">Generate Draw →</button>
+    </form>
+</section>
+<?php endif; ?>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     STEP 3 — DRAW OUTPUT
+═══════════════════════════════════════════════════════════════════════ -->
+<?php if (!empty($draws)): ?>
+<section class="step-section step-active" id="step-draw">
+    <div class="step-header">
+        <span class="step-num">03</span>
+        <div>
+            <h2 class="step-title">Tournament Draw</h2>
+            <p class="step-desc"><?= count($teams) ?> teams across <?= count($draws) ?> division(s)</p>
+        </div>
+        <div class="draw-actions">
+            <button onclick="window.print()" class="btn-ghost">🖨 Print</button>
+            <a href="export.php" class="btn-ghost">⬇ Export CSV</a>
+        </div>
+    </div>
+
+    <?php foreach ($draws as $divName => $divData): ?>
+    <div class="division-block">
+        <div class="division-header">
+            <span class="division-badge"><?= htmlspecialchars($divName) ?></span>
+            <span class="division-info">
+                <?= count($divData['teams']) ?> teams · Avg <?= $divData['avg_skill'] ?>
+                <?php if (!empty($divData['dupr_avg'])): ?>
+                    · Avg DUPR <?= $divData['dupr_avg'] ?>
+                <?php endif; ?>
+            </span>
+        </div>
+
+        <div class="teams-row">
+            <?php foreach ($divData['teams'] as $team): ?>
+            <div class="team-chip">
+                <span class="team-num"><?= $team['id'] ?></span>
+                <span class="team-names"><?= htmlspecialchars($team['player1']) ?> &amp; <?= htmlspecialchars($team['player2']) ?></span>
+                <?php if ($team['combined_dupr'] !== null): ?>
+                    <span class="team-dupr" title="Combined DUPR">DUPR <?= $team['combined_dupr'] ?></span>
+                <?php else: ?>
                     <span class="team-skill">⚡<?= $team['combined_skill'] ?></span>
-                </div>
-                <?php endforeach; ?>
-            </div>
-
-            <!-- Match schedule for this division -->
-            <?php foreach ($divData['rounds'] as $roundNum => $matches): ?>
-            <div class="round-block">
-                <h4 class="round-title">Round <?= $roundNum ?></h4>
-                <div class="matches-grid">
-                    <?php foreach ($matches as $match): ?>
-                    <div class="match-card">
-                        <div class="match-court">Court <?= $match['court'] ?></div>
-                        <div class="match-teams">
-                            <div class="match-team home">
-                                <span class="match-team-id"><?= $match['team1_id'] ?></span>
-                                <span class="match-team-name"><?= htmlspecialchars($match['team1']) ?></span>
-                            </div>
-                            <div class="match-vs">VS</div>
-                            <div class="match-team away">
-                                <span class="match-team-id"><?= $match['team2_id'] ?></span>
-                                <span class="match-team-name"><?= htmlspecialchars($match['team2']) ?></span>
-                            </div>
-                        </div>
-                        <div class="match-score">
-                            <input type="text" placeholder="Score" class="score-input">
-                        </div>
-                    </div>
-                    <?php endforeach; ?>
-                </div>
+                <?php endif; ?>
+                <?php if ($team['explicit_pair']): ?>
+                    <span class="pair-tag">✓ paired</span>
+                <?php endif; ?>
             </div>
             <?php endforeach; ?>
         </div>
+
+        <?php foreach ($divData['rounds'] as $roundNum => $matches): ?>
+        <div class="round-block">
+            <h4 class="round-title">Round <?= $roundNum ?></h4>
+            <div class="matches-grid">
+                <?php foreach ($matches as $match): ?>
+                <div class="match-card">
+                    <?php if (isset($match['note'])): ?>
+                        <div class="match-note"><?= htmlspecialchars($match['note']) ?></div>
+                    <?php else: ?>
+                    <div class="match-court">
+                        Court <?= $match['court'] ?>
+                        <?php if (!empty($match['pool'])): ?>
+                            <span class="pool-tag"><?= htmlspecialchars($match['pool']) ?></span>
+                        <?php endif; ?>
+                    </div>
+                    <div class="match-teams">
+                        <div class="match-team home">
+                            <span class="match-team-id">#<?= $match['team1_id'] ?></span>
+                            <span class="match-team-name"><?= htmlspecialchars($match['team1']) ?></span>
+                        </div>
+                        <div class="match-vs">VS</div>
+                        <div class="match-team away">
+                            <span class="match-team-id">#<?= $match['team2_id'] ?></span>
+                            <span class="match-team-name"><?= htmlspecialchars($match['team2']) ?></span>
+                        </div>
+                    </div>
+                    <div class="match-score">
+                        <input type="text" placeholder="Score" class="score-input">
+                    </div>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
         <?php endforeach; ?>
-    </section>
-    <?php endif; ?>
+    </div>
+    <?php endforeach; ?>
+</section>
+<?php endif; ?>
 
 </main>
 
+<!-- ═══════════════════════════════════════════════════════════════════════
+     ADD PLAYER MODAL
+═══════════════════════════════════════════════════════════════════════ -->
+<div id="addPlayerModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-box">
+        <div class="modal-header">
+            <h3 class="modal-title" id="modalTitle">Add Player Manually</h3>
+            <button type="button" class="modal-close" onclick="closeAddPlayerModal()" aria-label="Close">✕</button>
+        </div>
+
+        <form method="POST" class="modal-form" id="addPlayerForm">
+            <input type="hidden" name="action" value="add_player">
+
+            <div class="modal-row">
+                <div class="modal-field">
+                    <label class="form-label" for="new_first_name">First Name</label>
+                    <input type="text" id="new_first_name" name="new_first_name"
+                           class="form-input" placeholder="e.g. Jane" autocomplete="off">
+                </div>
+                <div class="modal-field">
+                    <label class="form-label" for="new_last_name">Last Name</label>
+                    <input type="text" id="new_last_name" name="new_last_name"
+                           class="form-input" placeholder="e.g. Smith" autocomplete="off">
+                </div>
+            </div>
+
+            <div class="modal-row">
+                <div class="modal-field">
+                    <label class="form-label" for="new_division">Tournament Division</label>
+                    <select id="new_division" name="new_division" class="form-select" onchange="syncModalDivision(this)">
+                        <option value="band-u25">Under 2.5</option>
+                        <option value="band-25">2.5 – 2.99</option>
+                        <option value="band-30" selected>3.0 – 3.49</option>
+                        <option value="band-35">3.5 – 3.99</option>
+                        <option value="band-4p">4.0+</option>
+                    </select>
+                </div>
+                <div class="modal-field">
+                    <label class="form-label" for="new_dupr">DUPR Rating <span class="label-optional">(optional)</span></label>
+                    <input type="text" id="new_dupr" name="new_dupr"
+                           class="form-input" placeholder="e.g. 3.42"
+                           pattern="[0-9]+(\.[0-9]{1,2})?" maxlength="6" autocomplete="off">
+                </div>
+            </div>
+
+            <div class="modal-row">
+                <div class="modal-field modal-field-full">
+                    <label class="form-label" for="new_partner">Partner Name <span class="label-optional">(optional — must match an existing player)</span></label>
+                    <input type="text" id="new_partner" name="new_partner"
+                           class="form-input" placeholder="e.g. John Doe"
+                           list="existingPlayersList" autocomplete="off">
+                    <datalist id="existingPlayersList">
+                        <?php foreach ($parsedData as $p): ?>
+                            <option value="<?= htmlspecialchars($p['name']) ?>">
+                        <?php endforeach; ?>
+                    </datalist>
+                </div>
+            </div>
+
+            <div id="addPlayerError" class="alert alert-error" style="display:none"></div>
+
+            <div class="modal-actions">
+                <button type="button" class="btn-ghost" onclick="closeAddPlayerModal()">Cancel</button>
+                <button type="submit" class="btn-primary">Add Player</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <footer class="site-footer">
-    <p>DrawMaster · Tournament Engine · <?= date('Y') ?></p>
+    <p>🥒 Pickledraw · Pickleball Tournament Draw Generator · <?= date('Y') ?></p>
 </footer>
+
+<!-- Attendee data for JS partner select logic -->
+<?php if (!empty($parsedData)): ?>
+<script>
+const ATTENDEES = <?= json_encode(array_map(fn($i, $p) => [
+    'idx'            => $i,
+    'name'           => $p['name'],
+    'skill_raw'      => $p['skill_raw'],
+    'skill_band'     => $p['skill_band'],
+    'dupr'           => $p['dupr'] ?? null,
+    'partner_matched'=> $p['partner_matched'],
+], array_keys($parsedData), $parsedData), JSON_HEX_TAG) ?>;
+</script>
+<?php endif; ?>
 
 <script src="js/app.js"></script>
 </body>

@@ -45,40 +45,42 @@ class DrawEngine
 
     private function buildTeams(): array
     {
-        $teams      = [];
-        $paired     = [];
-        $unmatched  = [];
+        $teams   = [];
+        $paired  = []; // indices of players already placed into a team
 
-        // First pass: form explicitly named partner pairs
+        // First pass: confirmed pairs (auto-resolved OR manually assigned)
         foreach ($this->players as $i => $player) {
             if (in_array($i, $paired)) continue;
-            if (!$player['partner_matched'])  {
-                $unmatched[] = $i;
-                continue;
-            }
+            if (!$player['partner_matched']) continue;
 
-            // Find the partner
-            $partnerIdx = $this->findPlayerIndex($player['partner']);
-            if ($partnerIdx === null || in_array($partnerIdx, $paired)) {
-                $unmatched[] = $i;
-                continue;
+            // Find the partner index — prefer manual_partner, then name lookup
+            $partnerIdx = $player['manual_partner'] ?? $this->findPlayerIndex($player['partner_resolved'] ?? $player['partner'] ?? '');
+
+            if ($partnerIdx === null || in_array($partnerIdx, $paired) || $partnerIdx === $i) {
+                continue; // partner already taken or not found — fall through to auto-pair
             }
 
             $partner = $this->players[$partnerIdx];
-            $teams[] = $this->makeTeam($player, $partner);
+            $teams[] = $this->makeTeam($player, $partner, true);
             $paired[] = $i;
             $paired[] = $partnerIdx;
         }
 
-        // Second pass: pair remaining players by similar skill
-        $remaining = array_map(fn($i) => $this->players[$i], $unmatched);
-        usort($remaining, fn($a, $b) => $b['skill'] <=> $a['skill']);
+        // Second pass: auto-pair remaining players by closest skill
+        $remaining = [];
+        foreach ($this->players as $i => $p) {
+            if (!in_array($i, $paired)) {
+                $remaining[$i] = $p;
+            }
+        }
+        // Sort by skill descending for greedy closest-match pairing
+        uasort($remaining, fn($a, $b) => $b['skill'] <=> $a['skill']);
+        $remaining = array_values($remaining);
 
         while (count($remaining) >= 2) {
-            $p1 = array_shift($remaining);
-            // Find closest skill partner
-            $bestIdx  = 0;
-            $bestDiff = PHP_INT_MAX;
+            $p1      = array_shift($remaining);
+            $bestIdx = 0;
+            $bestDiff = PHP_FLOAT_MAX;
             foreach ($remaining as $j => $p) {
                 $diff = abs($p1['skill'] - $p['skill']);
                 if ($diff < $bestDiff) {
@@ -90,13 +92,12 @@ class DrawEngine
             $teams[] = $this->makeTeam($p1, $p2, false);
         }
 
-        // If odd player out, form a trio (add to last team's note, or solo bye)
+        // Odd player out — attach as bye to last team
         if (!empty($remaining)) {
             $solo = $remaining[0];
             if (!empty($teams)) {
-                $teams[count($teams) - 1]['note'] = 'Includes bye player: ' . $solo['name'];
+                $teams[count($teams) - 1]['note'] = 'Bye: ' . $solo['name'];
             } else {
-                // Only one player — create a solo team
                 $teams[] = [
                     'id'             => $this->teamCounter++,
                     'player1'        => $solo['name'],
@@ -106,7 +107,7 @@ class DrawEngine
                     'combined_skill' => $solo['skill'],
                     'avg_skill'      => $solo['skill'],
                     'explicit_pair'  => false,
-                    'note'           => 'Solo player - awaiting partner',
+                    'note'           => 'Solo player awaiting partner',
                 ];
             }
         }
@@ -116,14 +117,25 @@ class DrawEngine
 
     private function makeTeam(array $p1, array $p2, bool $explicit = true): array
     {
+        $avg = round(($p1['skill'] + $p2['skill']) / 2, 2);
+
+        $dupr1 = isset($p1['dupr']) && $p1['dupr'] !== null ? (float)$p1['dupr'] : null;
+        $dupr2 = isset($p2['dupr']) && $p2['dupr'] !== null ? (float)$p2['dupr'] : null;
+        $combinedDupr = ($dupr1 !== null && $dupr2 !== null) ? round($dupr1 + $dupr2, 2) : null;
+
         return [
             'id'             => $this->teamCounter++,
             'player1'        => $p1['name'],
             'player2'        => $p2['name'],
             'skill1'         => $p1['skill'],
             'skill2'         => $p2['skill'],
-            'combined_skill' => round($p1['skill'] + $p2['skill'], 1),
-            'avg_skill'      => round(($p1['skill'] + $p2['skill']) / 2, 1),
+            'combined_skill' => round($p1['skill'] + $p2['skill'], 2),
+            'avg_skill'      => $avg,
+            'skill_raw1'     => $p1['skill_raw'] ?? (string)$p1['skill'],
+            'skill_raw2'     => $p2['skill_raw'] ?? (string)$p2['skill'],
+            'dupr1'          => $dupr1,
+            'dupr2'          => $dupr2,
+            'combined_dupr'  => $combinedDupr,
             'explicit_pair'  => $explicit,
             'note'           => '',
         ];
@@ -131,6 +143,7 @@ class DrawEngine
 
     private function findPlayerIndex(string $name): ?int
     {
+        if ($name === '') return null;
         $nameLower = strtolower($name);
         foreach ($this->players as $i => $p) {
             if (strtolower($p['name']) === $nameLower) return $i;
@@ -140,34 +153,55 @@ class DrawEngine
 
     // -----------------------------------------------------------------------
     // SKILL DIVISION GROUPING
+    // Fixed pickleball bands: Under 2.5 | 2.5–2.99 | 3.0–3.49 | 3.5–3.99 | 4.0+
+    // When fewer bands requested, bands are merged from the bottom up.
     // -----------------------------------------------------------------------
 
     private function groupBySkill(int $numBands): array
     {
         if (empty($this->teams)) return [];
 
+        // The 5 fixed pickleball skill bands (highest first = Division A)
+        $fixedBands = [
+            'Division A (4.0+)'       => fn(float $s) => $s >= 4.0,
+            'Division B (3.5–3.99)'   => fn(float $s) => $s >= 3.5 && $s < 4.0,
+            'Division C (3.0–3.49)'   => fn(float $s) => $s >= 3.0 && $s < 3.5,
+            'Division D (2.5–2.99)'   => fn(float $s) => $s >= 2.5 && $s < 3.0,
+            'Division E (Under 2.5)'  => fn(float $s) => $s < 2.5,
+        ];
+
+        if ($numBands >= 5) {
+            // Use all 5 fixed bands
+            $divisions = [];
+            foreach ($fixedBands as $label => $test) {
+                foreach ($this->teams as $team) {
+                    if ($test($team['avg_skill'])) {
+                        $divisions[$label][] = $team;
+                    }
+                }
+            }
+            // Remove empty divisions
+            return array_filter($divisions);
+        }
+
+        // Fewer bands requested — fall back to dynamic equal-range splitting
         $skills = array_column($this->teams, 'avg_skill');
         $min    = min($skills);
         $max    = max($skills);
 
         if ($max === $min) {
-            // All same skill - one division
             return ['Division A' => $this->teams];
         }
 
-        $range     = $max - $min;
-        $bandSize  = $range / $numBands;
+        $bandSize   = ($max - $min) / $numBands;
         $divLetters = range('A', 'Z');
+        $divisions  = [];
 
-        $divisions = [];
         foreach ($this->teams as $team) {
             $bandIdx = (int) floor(($team['avg_skill'] - $min) / $bandSize);
-            $bandIdx = min($bandIdx, $numBands - 1); // cap at top band
-
-            // Reverse: highest skill = Division A
-            $divIdx  = ($numBands - 1) - $bandIdx;
-            $divName = 'Division ' . ($divLetters[$divIdx] ?? $divIdx + 1);
-
+            $bandIdx = min($bandIdx, $numBands - 1);
+            $divIdx  = ($numBands - 1) - $bandIdx; // highest skill = A
+            $divName = 'Division ' . ($divLetters[$divIdx] ?? ($divIdx + 1));
             $divisions[$divName][] = $team;
         }
 
@@ -185,9 +219,29 @@ class DrawEngine
         $courtCounter = 1;
 
         foreach ($divisions as $divName => $teams) {
+            // Sort teams within division: combined DUPR descending (if available),
+            // then avg_skill descending as fallback. This ensures similarly-skilled
+            // DUPR-rated teams are seeded close together.
+            usort($teams, function (array $a, array $b) {
+                $aDupr = $a['combined_dupr'] ?? null;
+                $bDupr = $b['combined_dupr'] ?? null;
+
+                if ($aDupr !== null && $bDupr !== null) {
+                    return $bDupr <=> $aDupr; // both have DUPR — sort by it
+                }
+                if ($aDupr !== null) return -1; // a has DUPR, b doesn't — a first
+                if ($bDupr !== null) return 1;  // b has DUPR, a doesn't — b first
+                return $b['avg_skill'] <=> $a['avg_skill']; // neither — fall back
+            });
+
+            // Compute DUPR stats for the division
+            $duprValues  = array_filter(array_column($teams, 'combined_dupr'), fn($v) => $v !== null);
+            $duprAvg     = count($duprValues) > 0 ? round(array_sum($duprValues) / count($duprValues), 2) : null;
+
             $draws[$divName] = [
                 'teams'     => $teams,
-                'avg_skill' => round(array_sum(array_column($teams, 'avg_skill')) / count($teams), 1),
+                'avg_skill' => round(array_sum(array_column($teams, 'avg_skill')) / count($teams), 2),
+                'dupr_avg'  => $duprAvg,
                 'rounds'    => [],
             ];
 
