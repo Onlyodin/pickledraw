@@ -353,6 +353,16 @@ body {
 .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
 .btn-sm { font-size: 0.78rem; padding: 0.35rem 0.75rem; }
 
+.btn-word {
+    color: #5b9bd5;
+    border-color: rgba(91,155,213,0.4);
+}
+.btn-word:hover {
+    color: #7cb8e8;
+    border-color: #5b9bd5;
+    background: rgba(91,155,213,0.08);
+}
+
 /* ---- Alerts ---- */
 .alert {
     padding: 0.9rem 1.2rem;

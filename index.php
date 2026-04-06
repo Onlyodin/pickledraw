@@ -156,10 +156,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 $engine = new DrawEngine($parsedData);
                 $result = $engine->generateDraw([
-                    'rounds'      => (int)($_POST['rounds'] ?? 3),
+                    'rounds'      => (int)($_POST['rounds'] ?? 8),
                     'skill_bands' => (int)($_POST['skill_bands'] ?? 5),
                     'format'      => $_POST['format'] ?? 'round_robin',
-                    'courts'      => (int)($_POST['courts'] ?? 4),
+                    'courts'      => (int)($_POST['courts'] ?? 11),
                 ]);
                 $teams = $result['teams'];
                 $draws = $result['draws'];
@@ -655,11 +655,11 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
             </div>
             <div class="setting-card">
                 <label class="form-label">Rounds</label>
-                <input type="number" name="rounds" value="3" min="1" max="10" class="form-input">
+                <input type="number" name="rounds" value="8" min="1" max="20" class="form-input">
             </div>
             <div class="setting-card">
                 <label class="form-label">Courts Available</label>
-                <input type="number" name="courts" value="4" min="1" max="20" class="form-input">
+                <input type="number" name="courts" value="11" min="1" max="30" class="form-input">
             </div>
             <div class="setting-card">
                 <label class="form-label">Skill Divisions</label>
@@ -696,6 +696,7 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
         <div class="draw-actions">
             <button onclick="window.print()" class="btn-ghost">🖨 Print</button>
             <a href="export.php" class="btn-ghost">⬇ Export CSV</a>
+            <a href="export_docx.php" class="btn-ghost btn-word">📄 Export Word</a>
         </div>
     </div>
 
