@@ -61,9 +61,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 $parser     = new CSVParser();
                 $parsedData = $parser->parse($rawData, $_POST['delimiter'] ?? 'auto');
-                $_SESSION['parsed_data'] = $parsedData;
-                $_SESSION['draws']       = [];
-                $_SESSION['teams']       = [];
+                $_SESSION['parsed_data']  = $parsedData;
+                $_SESSION['column_map']   = $parser->getLastColumnMap();
+                $_SESSION['draws']        = [];
+                $_SESSION['teams']        = [];
             } catch (Exception $e) {
                 $error = 'Import error: ' . $e->getMessage();
             }
@@ -289,6 +290,7 @@ if (empty($teams) && !empty($_SESSION['teams'])) {
 if (empty($parsedData) && !empty($_SESSION['parsed_data'])) {
     $parsedData = $_SESSION['parsed_data'];
 }
+$columnMap = $_SESSION['column_map'] ?? [];
 
 // ── Counts ────────────────────────────────────────────────────────────────────
 $matchedCount   = $parsedData ? count(array_filter($parsedData, fn($p) => $p['partner_matched']))  : 0;
@@ -418,6 +420,46 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
         <?php endif; ?>
         <div class="stat-pill stat-blue"><?= count($parsedData) ?> total attendees</div>
     </div>
+
+    <?php
+    // Column detection summary — show warnings for any critical columns not found
+    $criticalCols = [
+        'first_name'  => 'Attendee First Name',
+        'last_name'   => 'Attendee Last Name',
+        'skill_level' => 'Tournament Division',
+        'partner'     => 'Name of partner(s)',
+    ];
+    $missingCols = [];
+    foreach ($criticalCols as $key => $label) {
+        if (!isset($columnMap[$key])) {
+            $missingCols[] = $label;
+        }
+    }
+    ?>
+    <?php if (!empty($missingCols)): ?>
+    <div class="alert alert-warn col-warn">
+        <strong>⚠ Some columns were not detected:</strong>
+        <?= implode(', ', array_map('htmlspecialchars', $missingCols)) ?>.
+        Values for these fields will be blank or defaulted. Check your CSV headers match the expected format.
+    </div>
+    <?php endif; ?>
+
+    <?php if (!empty($columnMap)): ?>
+    <details class="col-debug">
+        <summary>Column mapping detected (<?= count($columnMap) ?> columns)</summary>
+        <div class="col-debug-grid">
+            <?php foreach ($criticalCols as $key => $label): ?>
+            <div class="col-debug-item <?= isset($columnMap[$key]) ? 'col-ok' : 'col-missing' ?>">
+                <?= isset($columnMap[$key]) ? '✓' : '✗' ?>
+                <span><?= htmlspecialchars($label) ?></span>
+                <?php if (isset($columnMap[$key])): ?>
+                    <span class="col-idx">col <?= $columnMap[$key] + 1 ?></span>
+                <?php endif; ?>
+            </div>
+            <?php endforeach; ?>
+        </div>
+    </details>
+    <?php endif; ?>
 
     <form method="POST" class="pairing-form" id="pairingForm">
         <input type="hidden" name="action" value="save_pairings">
