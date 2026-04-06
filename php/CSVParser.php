@@ -3,29 +3,44 @@
 /**
  * CSVParser - Parses Pickledraw registration CSV exports
  *
- * Expected columns (Eventbrite-style):
- *   Date Created, Order ID, Purchaser User ID, Attendee ID,
- *   Attendee First Name, Attendee Last Name, Status, Ticket Class,
- *   Ticket Class Price, Is Guest, Checked in, Checked in Date,
- *   Name of partner(s), I am registered to play in a tournament at this level.
+ * Handles multiple real-world column naming conventions including
+ * Eventbrite exports, custom Google Form exports, and manual spreadsheets.
+ *
+ * Supports up to TWO nominated partners per player.
  */
 class CSVParser
 {
-    /**
-     * Exact-match header map: sanitised lowercase header → internal key.
-     * We also do substring/partial matching as a fallback (see buildColumnIndex).
-     */
+    // -------------------------------------------------------------------------
+    // Column matching rules
+    //
+    // Three-pass resolution per column:
+    //   Pass 1: exact match (after sanitise + lowercase)
+    //   Pass 2: exact match after stripping trailing punctuation
+    //   Pass 3: substring / keyword match (most specific patterns listed first)
+    // -------------------------------------------------------------------------
+
+    /** Exact lowercase header → internal key */
     private array $exactMap = [
-        'date created'                                              => 'date_created',
+        // Names
+        'attendee first name'                                       => 'first_name',
+        'first name'                                                => 'first_name',
+        'firstname'                                                 => 'first_name',
+        'attendee last name'                                        => 'last_name',
+        'last name'                                                 => 'last_name',
+        'lastname'                                                  => 'last_name',
+        'full name'                                                 => 'full_name',
+        'name'                                                      => 'full_name',
+        'attendee name'                                             => 'full_name',
+
+        // IDs
+        'attendee id'                                               => 'attendee_id',
+        'attendee #'                                                => 'attendee_id',
         'order id'                                                  => 'order_id',
         'order #'                                                   => 'order_id',
         'purchaser user id'                                         => 'purchaser_id',
-        'attendee id'                                               => 'attendee_id',
-        'attendee #'                                                => 'attendee_id',
-        'attendee first name'                                       => 'first_name',
-        'first name'                                                => 'first_name',
-        'attendee last name'                                        => 'last_name',
-        'last name'                                                 => 'last_name',
+
+        // Booking meta
+        'date created'                                              => 'date_created',
         'status'                                                    => 'status',
         'ticket class'                                              => 'ticket_class',
         'ticket type'                                               => 'ticket_class',
@@ -33,58 +48,111 @@ class CSVParser
         'is guest'                                                  => 'is_guest',
         'checked in'                                                => 'checked_in',
         'checked in date'                                           => 'checked_in_date',
-        // Partner field — various phrasings
+
+        // Partner — common exact variants
         'name of partner(s)'                                        => 'partner',
-        'name of partners'                                          => 'partner',
         "name of partner(s)"                                        => 'partner',
+        'name of partners'                                          => 'partner',
         'partner'                                                   => 'partner',
         'partner name'                                              => 'partner',
+        'partner names'                                             => 'partner',
         'doubles partner'                                           => 'partner',
-        // Skill/division field — exact and common variants
+        'doubles partner name'                                      => 'partner',
+
+        // Division / skill — common exact variants
         'i am registered to play in a tournament at this level.'   => 'skill_level',
         'i am registered to play in a tournament at this level'    => 'skill_level',
+        'i am registered to play in a tournament at this level:'   => 'skill_level',
         'tournament level'                                          => 'skill_level',
         'tournament division'                                       => 'skill_level',
-        'skill level'                                               => 'skill_level',
         'division'                                                  => 'skill_level',
+        'skill level'                                               => 'skill_level',
         'level'                                                     => 'skill_level',
         'rating'                                                    => 'skill_level',
-        'dupr'                                                      => 'skill_level',
+        'registered level'                                          => 'skill_level',
+
+        // DUPR — common exact variants
+        'dupr'                                                      => 'dupr',
+        'dupr rating'                                               => 'dupr',
+        'dupr score'                                                => 'dupr',
+        'my dupr'                                                   => 'dupr',
     ];
 
     /**
-     * Substring patterns for fuzzy header matching (checked when exact fails).
-     * Order matters — more specific patterns first.
+     * Substring keyword patterns → internal key.
+     * Listed most-specific first. Checked only when exact match fails.
+     * Pattern is tested with str_contains() against the full sanitised lowercase header.
      */
     private array $substringMap = [
-        'registered to play'     => 'skill_level',
-        'tournament at this level' => 'skill_level',
-        'at this level'          => 'skill_level',
-        'name of partner'        => 'partner',
-        'partner(s)'             => 'partner',
-        'attendee first'         => 'first_name',
-        'first name'             => 'first_name',
-        'attendee last'          => 'last_name',
-        'last name'              => 'last_name',
-        'attendee id'            => 'attendee_id',
-        'order id'               => 'order_id',
-        'ticket class'           => 'ticket_class',
-        'checked in'             => 'checked_in',
+        // Partner fields (check before generic "name" patterns)
+        'name of partner'                           => 'partner',
+        'partner/partners'                          => 'partner',
+        'partner / partners'                        => 'partner',
+        'please name your partner'                  => 'partner',
+        'name your partner'                         => 'partner',
+        'partner(s)'                                => 'partner',
+        'partners (2 maximum)'                      => 'partner',
+        'partners (2'                               => 'partner',
+        'your partner'                              => 'partner',
+        'doubles partner'                           => 'partner',
+
+        // Division / tournament level (check before generic "level"/"rating")
+        'registered to play in a tournament'        => 'skill_level',
+        'tournament at this level'                  => 'skill_level',
+        'at this level'                             => 'skill_level',
+        'select the dupr that you are registered'   => 'skill_level',
+        'dupr that you are registered'              => 'skill_level',
+        'registered in for a tournament'            => 'skill_level',
+        'plan to register in for a tournament'      => 'skill_level',
+        'register in for a tournament'              => 'skill_level',
+        'tournament you are registered'             => 'skill_level',
+        'what division'                             => 'skill_level',
+        'which division'                            => 'skill_level',
+        'tournament division'                       => 'skill_level',
+
+        // DUPR (check before generic "rating")
+        'please enter your dupr'                    => 'dupr',
+        'enter your dupr'                           => 'dupr',
+        'your dupr'                                 => 'dupr',
+        'best guess'                                => 'dupr',   // "or best guess if you don't have..."
+        "don't have a dupr"                         => 'dupr',
+        'dupr rating'                               => 'dupr',
+        'dupr score'                                => 'dupr',
+        'dupr ('                                    => 'dupr',
+
+        // Name fields
+        'attendee first'                            => 'first_name',
+        'first name'                                => 'first_name',
+        'attendee last'                             => 'last_name',
+        'last name'                                 => 'last_name',
+
+        // IDs / meta
+        'attendee id'                               => 'attendee_id',
+        'order id'                                  => 'order_id',
+        'ticket class'                              => 'ticket_class',
+        'checked in'                                => 'checked_in',
     ];
 
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
 
+    private array $lastColumnMap = [];
+
+    public function getLastColumnMap(): array
+    {
+        return $this->lastColumnMap;
+    }
+
     public function parse(string $rawData, string $delimiter = 'auto'): array
     {
-        $rawData = $this->normalizeLineEndings($rawData);
-        // Strip UTF-8 BOM if present
+        // Strip UTF-8 BOM
         if (str_starts_with($rawData, "\xEF\xBB\xBF")) {
             $rawData = substr($rawData, 3);
         }
 
-        $lines = array_values(array_filter(
+        $rawData = $this->normalizeLineEndings($rawData);
+        $lines   = array_values(array_filter(
             explode("\n", $rawData),
             fn($l) => trim($l) !== ''
         ));
@@ -100,11 +168,9 @@ class CSVParser
             throw new Exception('File must have a header row and at least one data row.');
         }
 
-        $colIndex = $this->buildColumnIndex($rows[0]);
-        $dataRows = array_slice($rows, 1);
-
-        // Debug: store which headers were mapped (available via getLastColumnMap())
-        $this->lastColumnMap = $colIndex;
+        $colIndex             = $this->buildColumnIndex($rows[0]);
+        $this->lastColumnMap  = $colIndex;
+        $dataRows             = array_slice($rows, 1);
 
         $players = [];
         foreach ($dataRows as $lineNum => $row) {
@@ -120,19 +186,12 @@ class CSVParser
             throw new Exception(
                 'No valid attendee records found. ' .
                 'Columns detected: [' . ($mapped ?: 'none') . ']. ' .
-                'Ensure the CSV contains "Attendee First Name", "Attendee Last Name", ' .
-                '"Name of partner(s)", and "I am registered to play in a tournament at this level."'
+                'Ensure the CSV contains player name columns and at least one of: ' .
+                '"Name of partner(s)" and "I am registered to play in a tournament at this level."'
             );
         }
 
         return $this->resolvePartners($players);
-    }
-
-    private array $lastColumnMap = [];
-
-    public function getLastColumnMap(): array
-    {
-        return $this->lastColumnMap;
     }
 
     // -------------------------------------------------------------------------
@@ -149,21 +208,15 @@ class CSVParser
         if ($hint !== 'auto' && $hint !== '') {
             return $hint === '\t' ? "\t" : $hint;
         }
-
-        // Sample the first 10 lines
         $sample = implode("\n", array_slice(explode("\n", $data), 0, 10));
-
         $counts = [
             ','  => substr_count($sample, ','),
             ';'  => substr_count($sample, ';'),
             "\t" => substr_count($sample, "\t"),
             '|'  => substr_count($sample, '|'),
         ];
-
         arsort($counts);
         $best = array_key_first($counts);
-
-        // Sanity check: comma count must be > 0 to be valid
         return ($counts[$best] > 0) ? $best : ',';
     }
 
@@ -171,30 +224,25 @@ class CSVParser
     {
         $rows = [];
         foreach ($lines as $line) {
-            // Always use str_getcsv for commas — handles quoted fields with commas inside
-            if ($delimiter === ',') {
-                $cells = str_getcsv($line, ',', '"', '\\');
-            } else {
-                $cells = explode($delimiter, $line);
-            }
+            $cells = ($delimiter === ',')
+                ? str_getcsv($line, ',', '"', '\\')
+                : explode($delimiter, $line);
             $rows[] = array_map(fn($c) => $this->sanitiseCell($c), $cells);
         }
         return $rows;
     }
 
     /**
-     * Sanitise a single cell: trim whitespace, strip surrounding quotes left by
-     * some exporters, remove zero-width and non-breaking spaces.
+     * Sanitise a single cell value: remove BOM/nbsp/zero-width chars,
+     * collapse whitespace, strip residual surrounding quotes.
      */
     private function sanitiseCell(string $cell): string
     {
-        // Remove zero-width space, non-breaking space, BOM remnants
+        // Strip BOM and various invisible spaces
         $cell = preg_replace('/[\x{00A0}\x{200B}\x{FEFF}]/u', ' ', $cell);
-        // Collapse multiple spaces
         $cell = preg_replace('/\s+/', ' ', $cell);
-        // Strip surrounding whitespace
         $cell = trim($cell);
-        // Strip surrounding quotes that weren't handled by str_getcsv
+        // Strip surrounding double-quotes not handled by str_getcsv
         if (strlen($cell) >= 2 && $cell[0] === '"' && $cell[-1] === '"') {
             $cell = substr($cell, 1, -1);
         }
@@ -202,49 +250,44 @@ class CSVParser
     }
 
     /**
-     * Build internal_key => column_index map from the header row.
+     * Build internal_key → column_index map from the header row.
      *
-     * Three-pass approach:
-     *   1. Exact match against $exactMap
-     *   2. Exact match after stripping trailing punctuation (. ! ?)
-     *   3. Substring match against $substringMap
+     * Three passes:
+     *  1. Exact match on sanitised lowercase
+     *  2. Exact match after stripping trailing punctuation  . : ! ?
+     *  3. Substring keyword match (most-specific patterns first)
+     *
+     * First match wins per internal key; later columns never overwrite.
+     * Exception: 'dupr' can be detected alongside 'skill_level' independently.
      */
     private function buildColumnIndex(array $headerRow): array
     {
         $index = [];
 
+        // Pass 1 + 2: exact matches
         foreach ($headerRow as $i => $col) {
-            $raw     = $this->sanitiseCell($col);
-            $lower   = strtolower($raw);
-            $stripped = rtrim($lower, '.!? ');   // version without trailing punctuation
+            $lower    = strtolower($this->sanitiseCell($col));
+            $stripped = rtrim($lower, '.:!? ');
 
-            // Pass 1: exact match
-            if (isset($this->exactMap[$lower]) && !isset($index[$this->exactMap[$lower]])) {
-                $index[$this->exactMap[$lower]] = $i;
-                continue;
-            }
-
-            // Pass 2: exact match on stripped version
-            if (isset($this->exactMap[$stripped]) && !isset($index[$this->exactMap[$stripped]])) {
-                $index[$this->exactMap[$stripped]] = $i;
-                continue;
+            foreach ([$lower, $stripped] as $candidate) {
+                if (isset($this->exactMap[$candidate])) {
+                    $key = $this->exactMap[$candidate];
+                    if (!isset($index[$key])) {
+                        $index[$key] = $i;
+                    }
+                }
             }
         }
 
-        // Pass 3: substring match for anything not yet resolved
-        $needed = ['first_name', 'last_name', 'partner', 'skill_level',
-                   'attendee_id', 'order_id', 'ticket_class', 'checked_in'];
-
+        // Pass 3: substring keyword match for anything still unmapped
         foreach ($headerRow as $i => $col) {
             $lower = strtolower($this->sanitiseCell($col));
 
-            foreach ($this->substringMap as $needle => $internalKey) {
-                if (isset($index[$internalKey])) continue; // already mapped
-                if (!in_array($internalKey, $needed)) continue;
-
+            foreach ($this->substringMap as $needle => $key) {
+                if (isset($index[$key])) continue; // already resolved
                 if (str_contains($lower, $needle)) {
-                    $index[$internalKey] = $i;
-                    break;
+                    $index[$key] = $i;
+                    break; // stop checking needles for this column
                 }
             }
         }
@@ -258,82 +301,124 @@ class CSVParser
 
     private function extractPlayer(array $row, array $idx, int $lineNum): ?array
     {
-        // Safe getter — returns '' if column not mapped or row too short
         $get = function (string $key) use ($row, $idx): string {
             if (!isset($idx[$key])) return '';
-            $colIdx = $idx[$key];
-            if ($colIdx < 0 || $colIdx >= count($row)) return '';
-            return $this->sanitiseCell($row[$colIdx]);
+            $ci = $idx[$key];
+            if ($ci < 0 || $ci >= count($row)) return '';
+            return $this->sanitiseCell($row[$ci]);
         };
 
+        // Support both split first/last OR a combined full-name column
         $firstName = $get('first_name');
         $lastName  = $get('last_name');
-        $fullName  = trim("$firstName $lastName");
 
+        if ($firstName === '' && $lastName === '') {
+            $full = $get('full_name');
+            if ($full !== '') {
+                // Split on first space
+                $parts     = explode(' ', $full, 2);
+                $firstName = $parts[0];
+                $lastName  = $parts[1] ?? '';
+            }
+        }
+
+        $fullName = trim("$firstName $lastName");
         if ($fullName === '') return null;
 
-        // Skip explicit cancellations/refunds
+        // Skip cancelled / refunded rows
         $status = strtolower($get('status'));
         if (in_array($status, ['not attending', 'cancelled', 'refunded', 'deleted', 'void'])) {
             return null;
         }
 
-        $skillRaw   = $get('skill_level');
-        $skillFloat = $this->parseSkillLevel($skillRaw);
-        $partner    = $get('partner');
+        $skillRaw    = $get('skill_level');
+        $skillFloat  = $this->parseSkillLevel($skillRaw);
+
+        // DUPR: prefer a dedicated DUPR column; fall back to blank
+        $duprRaw  = $get('dupr');
+        $duprVal  = ($duprRaw !== '' && is_numeric($duprRaw)) ? (float)$duprRaw : null;
+
+        // Partner: read the raw cell — may contain 1 or 2 names (comma/semicolon separated)
+        $partnerRaw = $get('partner');
+
+        // Split into up to 2 partner names
+        [$partner1, $partner2] = $this->parsePartnerNames($partnerRaw);
 
         return [
-            'name'             => $fullName,
-            'first_name'       => $firstName,
-            'last_name'        => $lastName,
-            'skill'            => $skillFloat,
-            'skill_raw'        => $skillRaw !== '' ? $skillRaw : 'Not specified',
-            'skill_band'       => $this->skillBandLabel($skillFloat),
-            'partner'          => $partner !== '' ? $partner : null,
-            'partner_matched'  => false,
-            'partner_resolved' => null,
-            'manual_partner'   => null,
-            'division_manual'  => false,
-            'dupr'             => null,
-            'team_id'          => null,
-            'attendee_id'      => $get('attendee_id'),
-            'order_id'         => $get('order_id'),
-            'ticket_class'     => $get('ticket_class'),
-            'checked_in'       => in_array(strtolower($get('checked_in')), ['yes', 'true', '1']),
-            'status'           => $get('status'),
+            'name'              => $fullName,
+            'first_name'        => $firstName,
+            'last_name'         => $lastName,
+            'skill'             => $skillFloat,
+            'skill_raw'         => $skillRaw !== '' ? $skillRaw : 'Not specified',
+            'skill_band'        => $this->skillBandLabel($skillFloat),
+            // Primary partner
+            'partner'           => $partner1,
+            'partner_matched'   => false,
+            'partner_resolved'  => null,
+            'manual_partner'    => null,
+            // Secondary partner (optional)
+            'partner2'          => $partner2,
+            'partner2_matched'  => false,
+            'partner2_resolved' => null,
+            'manual_partner2'   => null,
+            // Other fields
+            'division_manual'   => false,
+            'dupr'              => $duprVal,
+            'team_id'           => null,
+            'attendee_id'       => $get('attendee_id'),
+            'order_id'          => $get('order_id'),
+            'ticket_class'      => $get('ticket_class'),
+            'checked_in'        => in_array(strtolower($get('checked_in')), ['yes', 'true', '1']),
+            'status'            => $get('status'),
         ];
     }
 
     /**
-     * Convert a skill level value from the CSV to a pickleball rating float.
+     * Split a raw partner field into up to two trimmed names.
+     * Returns [partner1|null, partner2|null].
+     */
+    private function parsePartnerNames(string $raw): array
+    {
+        if ($raw === '') return [null, null];
+
+        // Split on comma, semicolon, " and ", " & "
+        $parts = preg_split('/[,;]|\s+(?:and|&)\s+/i', $raw);
+        $parts = array_values(array_filter(array_map('trim', $parts), fn($s) => $s !== ''));
+
+        $p1 = $parts[0] ?? null;
+        $p2 = $parts[1] ?? null;
+
+        return [$p1, $p2];
+    }
+
+    /**
+     * Convert a skill level / division string to a pickleball float rating.
      *
      * Handles:
-     *  - Bare numbers:             "3.5", "4.0", "2.5"
-     *  - Number + text:            "3.5 - Intermediate", "4.0 Open"
-     *  - Text-only labels:         "Beginner", "Intermediate", "Advanced"
-     *  - Band range strings:       "3.5-3.99", "3.5 to 3.99"
-     *  - "Under X" phrasing:       "Under 2.5", "Below 2.5"
-     *  - Empty/missing:            defaults to 3.0
+     *   Bare numbers:          "3.5", "4.0"
+     *   Number + text:         "3.5 - Intermediate", "4.0 Open"
+     *   Range strings:         "3.5-3.99", "3.5 to 3.99"
+     *   "Under X" / "< X":    "Under 2.5", "below 3.0"
+     *   Text-only labels:      "Beginner", "Intermediate", "Advanced"
+     *   Empty:                 defaults to 3.0
      */
     private function parseSkillLevel(string $raw): float
     {
-        if ($raw === '' || strtolower($raw) === 'not specified') return 3.0;
-
-        $lower = strtolower(trim($raw));
+        if ($raw === '' || strtolower(trim($raw)) === 'not specified') return 3.0;
 
         // "Under X" / "Below X" / "< X"
         if (preg_match('/(?:under|below|<)\s*(\d+(?:\.\d+)?)/i', $raw, $m)) {
-            return (float)$m[1] - 0.1; // just below the threshold
+            return max(0.0, (float)$m[1] - 0.01);
         }
 
-        // Extract the FIRST numeric value (handles "3.5 - Intermediate", "Level 3.0" etc.)
+        // Extract leading number
         if (preg_match('/(\d+(?:\.\d+)?)/', $raw, $m)) {
             return (float)$m[1];
         }
 
-        // Pure text labels
+        // Text-only fallback
+        $lower = strtolower($raw);
         return match (true) {
-            str_contains($lower, '4.0')          => 4.0,
             str_contains($lower, 'open')         => 4.5,
             str_contains($lower, 'advanced')     => 4.0,
             str_contains($lower, 'intermediate') => 3.5,
@@ -343,9 +428,6 @@ class CSVParser
         };
     }
 
-    /**
-     * Map a pickleball rating to one of the 5 fixed display band keys.
-     */
     private function skillBandLabel(float $skill): string
     {
         if ($skill >= 4.0) return 'band-4p';
@@ -356,81 +438,53 @@ class CSVParser
     }
 
     // -------------------------------------------------------------------------
-    // Partner matching
+    // Partner matching — supports two partners per player
     // -------------------------------------------------------------------------
 
     /**
-     * Match players to their nominated partners.
+     * Resolve partner1 and partner2 for every player.
      *
      * Rules:
-     *  - One-way declaration is SUFFICIENT: if A names B, both are marked matched.
-     *  - Two-way declarations are handled correctly (no double-marking).
-     *  - Fuzzy matching: tries "Last First" reversal and substring containment.
-     *  - Partner field may contain comma/semicolon-separated names (takes first).
+     * - One-way declaration is sufficient.
+     * - Fuzzy matching: "Last First" reversal + substring containment.
+     * - Both partner slots resolved independently.
+     * - A player can be resolved as partner2 of someone if they're already
+     *   partner1 of another (two-partner logic handled in DrawEngine).
      */
-    private function resolvePartners(array $players): array
+    public function resolvePartners(array $players): array
     {
-        // Build lookup table: normalised_name → player index
-        // Include both "First Last" and "Last First" variants
-        $lookup = [];
+        // Build lookup: normalised_name → index
+        $lookup = $this->buildNameLookup($players);
+
+        // Resolve primary partners
         foreach ($players as $i => $p) {
-            $lookup[$this->normaliseName($p['name'])] = $i;
-            if ($p['first_name'] && $p['last_name']) {
-                $reversed = $this->normaliseName($p['last_name'] . ' ' . $p['first_name']);
-                if (!isset($lookup[$reversed])) {
-                    $lookup[$reversed] = $i;
-                }
-            }
-        }
-
-        foreach ($players as $i => $p) {
-            // Skip if already matched (could have been matched as the partner of someone earlier)
-            if ($players[$i]['partner_matched']) continue;
-            if (!$p['partner'])                  continue;
-
-            // Partner field can have multiple names; try each
-            $candidates = $this->splitPartnerField($p['partner']);
-
-            foreach ($candidates as $partnerRaw) {
-                $partnerNorm = $this->normaliseName($partnerRaw);
-                if ($partnerNorm === '') continue;
-
-                // --- Exact lookup ---
-                $j = $lookup[$partnerNorm] ?? null;
-
-                // --- Fuzzy fallback: try reversing first/last in the candidate ---
-                if ($j === null) {
-                    $parts = explode(' ', $partnerNorm, 2);
-                    if (count($parts) === 2) {
-                        $reversed = $parts[1] . ' ' . $parts[0];
-                        $j = $lookup[$reversed] ?? null;
-                    }
-                }
-
-                // --- Fuzzy fallback: substring containment (min 4 chars) ---
-                if ($j === null && strlen($partnerNorm) >= 4) {
-                    foreach ($lookup as $norm => $k) {
-                        if ($k === $i) continue;
-                        if (str_contains($norm, $partnerNorm) || str_contains($partnerNorm, $norm)) {
-                            $j = $k;
-                            break; // stop after first match to avoid wrong assignment
-                        }
-                    }
-                }
-
-                // Found a match
-                if ($j !== null && $j !== $i) {
-                    // Mark both players as matched (one-way declaration is sufficient)
+            if (!$players[$i]['partner_matched'] && $p['partner']) {
+                $j = $this->findMatch($p['partner'], $i, $lookup, $players);
+                if ($j !== null) {
                     $players[$i]['partner_matched']  = true;
                     $players[$i]['partner_resolved'] = $players[$j]['name'];
-
-                    // Only overwrite partner B's resolved name if they haven't already been matched
+                    // Mark the other side only if they haven't been matched yet
                     if (!$players[$j]['partner_matched']) {
                         $players[$j]['partner_matched']  = true;
                         $players[$j]['partner_resolved'] = $players[$i]['name'];
                     }
+                }
+            }
 
-                    break; // stop trying other candidates for player $i
+            // Resolve secondary partner
+            if (!$players[$i]['partner2_matched'] && ($p['partner2'] ?? null)) {
+                $j = $this->findMatch($p['partner2'], $i, $lookup, $players);
+                if ($j !== null) {
+                    $players[$i]['partner2_matched']  = true;
+                    $players[$i]['partner2_resolved'] = $players[$j]['name'];
+                    // Mirror only if the other player hasn't nominated a second partner yet
+                    if (!$players[$j]['partner2_matched'] && !$players[$j]['partner_matched']) {
+                        $players[$j]['partner2_matched']  = true;
+                        $players[$j]['partner2_resolved'] = $players[$i]['name'];
+                    } elseif (!$players[$j]['partner_matched']) {
+                        $players[$j]['partner_matched']  = true;
+                        $players[$j]['partner_resolved'] = $players[$i]['name'];
+                    }
                 }
             }
         }
@@ -438,21 +492,61 @@ class CSVParser
         return $players;
     }
 
-    private function normaliseName(string $name): string
+    private function buildNameLookup(array $players): array
     {
-        // Lowercase, collapse whitespace, strip punctuation that might differ between entries
-        $name = strtolower(trim($name));
-        $name = preg_replace('/[^a-z0-9 ]/', '', $name); // strip apostrophes, hyphens etc.
-        return preg_replace('/\s+/', ' ', $name);
+        $lookup = [];
+        foreach ($players as $i => $p) {
+            $lookup[$this->normName($p['name'])] = $i;
+            if ($p['first_name'] && $p['last_name']) {
+                $rev = $this->normName($p['last_name'] . ' ' . $p['first_name']);
+                $lookup[$rev] ??= $i;
+            }
+        }
+        return $lookup;
+    }
+
+    private function findMatch(string $raw, int $selfIdx, array $lookup, array $players): ?int
+    {
+        $norm = $this->normName($raw);
+        if ($norm === '') return null;
+
+        // Exact
+        if (isset($lookup[$norm]) && $lookup[$norm] !== $selfIdx) {
+            return $lookup[$norm];
+        }
+
+        // Reverse first/last
+        $parts = explode(' ', $norm, 2);
+        if (count($parts) === 2) {
+            $rev = $parts[1] . ' ' . $parts[0];
+            if (isset($lookup[$rev]) && $lookup[$rev] !== $selfIdx) {
+                return $lookup[$rev];
+            }
+        }
+
+        // Substring (min 4 chars to avoid false positives)
+        if (strlen($norm) >= 4) {
+            foreach ($lookup as $key => $j) {
+                if ($j === $selfIdx) continue;
+                if (str_contains($key, $norm) || str_contains($norm, $key)) {
+                    return $j;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function normName(string $name): string
+    {
+        $n = strtolower(trim($name));
+        $n = preg_replace('/[^a-z0-9 ]/', '', $n); // strip apostrophes, hyphens etc.
+        return preg_replace('/\s+/', ' ', $n);
     }
 
     private function splitPartnerField(string $field): array
     {
-        // Split on comma, semicolon, or " and " — take all non-empty parts
-        $parts = preg_split('/[,;]|\band\b/i', $field);
-        return array_values(array_filter(
-            array_map('trim', $parts),
-            fn($s) => $s !== ''
-        ));
+        $parts = preg_split('/[,;]|\s+(?:and|&)\s+/i', $field);
+        return array_values(array_filter(array_map('trim', $parts), fn($s) => $s !== ''));
     }
 }

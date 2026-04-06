@@ -686,6 +686,34 @@ body {
     font-weight: 600;
 }
 
+/* 2nd-partner team chip tag */
+.alt-pair-tag {
+    font-size: 0.62rem;
+    background: rgba(91,143,255,0.14);
+    color: var(--blue);
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-weight: 600;
+    border: 1px solid rgba(91,143,255,0.3);
+}
+
+/* Alternate partner round indicator on match cards */
+.alt-round-tag {
+    font-size: 0.62rem;
+    color: var(--blue);
+    margin-left: 0.5rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+/* Partner 2 label in Partner Declared column */
+.partner2-label {
+    display: block;
+    font-size: 0.72rem;
+    color: var(--blue);
+    opacity: 0.85;
+}
+
 /* Pool tag on match card */
 .pool-tag {
     font-size: 0.65rem;

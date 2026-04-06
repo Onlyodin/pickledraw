@@ -40,59 +40,77 @@ class DrawEngine
     }
 
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
     // TEAM BUILDING
+    //
+    // Two-partner logic:
+    //   - A player with two resolved partners gets TWO team entries:
+    //       team slot 1 = player + partner1
+    //       team slot 2 = player + partner2
+    //   - In round-robin draw, odd rounds use slot-1 teams,
+    //     even rounds use slot-2 teams (swapped for affected players).
+    //   - If a slot-2 team is not available for a given round, slot-1 is used.
+    //   - Players with NO resolved partners are auto-paired by skill.
     // -----------------------------------------------------------------------
 
     private function buildTeams(): array
     {
-        $teams   = [];
-        $paired  = []; // indices of players already placed into a team
+        $teams  = [];
+        $paired = []; // player indices placed in at least one primary (slot-1) team
 
-        // First pass: confirmed pairs (auto-resolved OR manually assigned)
+        // --- Pass 1: confirmed primary pairs ---
         foreach ($this->players as $i => $player) {
             if (in_array($i, $paired)) continue;
             if (!$player['partner_matched']) continue;
 
-            // Find the partner index — prefer manual_partner, then name lookup
-            $partnerIdx = $player['manual_partner'] ?? $this->findPlayerIndex($player['partner_resolved'] ?? $player['partner'] ?? '');
+            $partnerIdx = $player['manual_partner']
+                ?? $this->findPlayerIndex($player['partner_resolved'] ?? $player['partner'] ?? '');
 
-            if ($partnerIdx === null || in_array($partnerIdx, $paired) || $partnerIdx === $i) {
-                continue; // partner already taken or not found — fall through to auto-pair
-            }
+            if ($partnerIdx === null || $partnerIdx === $i || in_array($partnerIdx, $paired)) continue;
 
-            $partner = $this->players[$partnerIdx];
-            $teams[] = $this->makeTeam($player, $partner, true);
+            $teams[]  = $this->makeTeam($player, $this->players[$partnerIdx], true, 1);
             $paired[] = $i;
             $paired[] = $partnerIdx;
         }
 
-        // Second pass: auto-pair remaining players by closest skill
+        // --- Pass 2: secondary partner teams (slot 2) ---
+        // A player can appear in both a slot-1 and a slot-2 team.
+        $paired2 = [];
+        foreach ($this->players as $i => $player) {
+            if (!($player['partner2_matched'] ?? false)) continue;
+            if (in_array($i, $paired2)) continue;
+
+            $p2Idx = $player['manual_partner2']
+                ?? $this->findPlayerIndex($player['partner2_resolved'] ?? $player['partner2'] ?? '');
+
+            if ($p2Idx === null || $p2Idx === $i || in_array($p2Idx, $paired2)) continue;
+
+            $teams[]   = $this->makeTeam($player, $this->players[$p2Idx], true, 2);
+            $paired2[] = $i;
+            $paired2[] = $p2Idx;
+        }
+
+        // --- Pass 3: auto-pair remaining unpaired players by closest skill ---
         $remaining = [];
         foreach ($this->players as $i => $p) {
-            if (!in_array($i, $paired)) {
-                $remaining[$i] = $p;
-            }
+            if (!in_array($i, $paired)) $remaining[$i] = $p;
         }
-        // Sort by skill descending for greedy closest-match pairing
         uasort($remaining, fn($a, $b) => $b['skill'] <=> $a['skill']);
         $remaining = array_values($remaining);
 
         while (count($remaining) >= 2) {
-            $p1      = array_shift($remaining);
-            $bestIdx = 0;
-            $bestDiff = PHP_FLOAT_MAX;
+            $p1 = array_shift($remaining);
+            $bestIdx = 0; $bestDiff = PHP_FLOAT_MAX;
             foreach ($remaining as $j => $p) {
-                $diff = abs($p1['skill'] - $p['skill']);
-                if ($diff < $bestDiff) {
-                    $bestDiff = $diff;
-                    $bestIdx  = $j;
-                }
+                $d = abs($p1['skill'] - $p['skill']);
+                if ($d < $bestDiff) { $bestDiff = $d; $bestIdx = $j; }
             }
             $p2 = array_splice($remaining, $bestIdx, 1)[0];
-            $teams[] = $this->makeTeam($p1, $p2, false);
+            $teams[] = $this->makeTeam($p1, $p2, false, 1);
         }
 
-        // Odd player out — attach as bye to last team
+        // Odd player out → bye
         if (!empty($remaining)) {
             $solo = $remaining[0];
             if (!empty($teams)) {
@@ -106,7 +124,9 @@ class DrawEngine
                     'skill2'         => 0,
                     'combined_skill' => $solo['skill'],
                     'avg_skill'      => $solo['skill'],
+                    'combined_dupr'  => null,
                     'explicit_pair'  => false,
+                    'partner_slot'   => 1,
                     'note'           => 'Solo player awaiting partner',
                 ];
             }
@@ -115,13 +135,12 @@ class DrawEngine
         return $teams;
     }
 
-    private function makeTeam(array $p1, array $p2, bool $explicit = true): array
+    private function makeTeam(array $p1, array $p2, bool $explicit = true, int $partnerSlot = 1): array
     {
-        $avg = round(($p1['skill'] + $p2['skill']) / 2, 2);
-
-        $dupr1 = isset($p1['dupr']) && $p1['dupr'] !== null ? (float)$p1['dupr'] : null;
-        $dupr2 = isset($p2['dupr']) && $p2['dupr'] !== null ? (float)$p2['dupr'] : null;
-        $combinedDupr = ($dupr1 !== null && $dupr2 !== null) ? round($dupr1 + $dupr2, 2) : null;
+        $avg  = round(($p1['skill'] + $p2['skill']) / 2, 2);
+        $d1   = isset($p1['dupr'])  && $p1['dupr']  !== null ? (float)$p1['dupr']  : null;
+        $d2   = isset($p2['dupr'])  && $p2['dupr']  !== null ? (float)$p2['dupr']  : null;
+        $cDupr = ($d1 !== null && $d2 !== null) ? round($d1 + $d2, 2) : null;
 
         return [
             'id'             => $this->teamCounter++,
@@ -133,10 +152,11 @@ class DrawEngine
             'avg_skill'      => $avg,
             'skill_raw1'     => $p1['skill_raw'] ?? (string)$p1['skill'],
             'skill_raw2'     => $p2['skill_raw'] ?? (string)$p2['skill'],
-            'dupr1'          => $dupr1,
-            'dupr2'          => $dupr2,
-            'combined_dupr'  => $combinedDupr,
+            'dupr1'          => $d1,
+            'dupr2'          => $d2,
+            'combined_dupr'  => $cDupr,
             'explicit_pair'  => $explicit,
+            'partner_slot'   => $partnerSlot,
             'note'           => '',
         ];
     }
@@ -144,9 +164,9 @@ class DrawEngine
     private function findPlayerIndex(string $name): ?int
     {
         if ($name === '') return null;
-        $nameLower = strtolower($name);
+        $nl = strtolower($name);
         foreach ($this->players as $i => $p) {
-            if (strtolower($p['name']) === $nameLower) return $i;
+            if (strtolower($p['name']) === $nl) return $i;
         }
         return null;
     }
@@ -270,64 +290,107 @@ class DrawEngine
     /**
      * Round robin using circle method algorithm.
      * Ensures every team plays every other team, minimising repeat matchups.
+
+    /**
+     * Round robin using circle method.
+     *
+     * Two-partner alternation:
+     *   - Slot-1 teams form the base draw schedule.
+     *   - On even rounds, any player who has a slot-2 team plays with partner2 instead.
+     *   - The slot-2 team substitutes in; the slot-1 team sits that round.
+     *   - Match display notes which rounds use alternate partners.
      */
     private function buildRoundRobin(array $teams, int $requestedRounds, int $courts, int $courtOffset): array
     {
-        $n = count($teams);
-        // Ensure even number (add bye if needed)
-        $hasBye = false;
+        // Separate slot-1 (base) and slot-2 (alternate) teams
+        $baseTeams = array_values(array_filter($teams, fn($t) => ($t['partner_slot'] ?? 1) === 1));
+        $altTeams  = array_values(array_filter($teams, fn($t) => ($t['partner_slot'] ?? 1) === 2));
+
+        // Build full lookup for all teams
+        $lookup = [];
+        foreach ($teams as $t) { $lookup[$t['id']] = $t; }
+
+        // Build player → slot2 team id map (keyed by player1 name)
+        $slot2ByPlayer = [];
+        foreach ($altTeams as $t) {
+            $slot2ByPlayer[$t['player1']] = $t['id'];
+            $slot2ByPlayer[$t['player2']] = $t['id'];
+        }
+
+        $n = count($baseTeams);
+        if ($n === 0) return [];
+
+        // Add bye if odd
         if ($n % 2 !== 0) {
-            $teams[] = ['id' => 0, 'player1' => 'BYE', 'player2' => '', 'avg_skill' => 0];
+            $baseTeams[] = ['id' => 0, 'player1' => 'BYE', 'player2' => '', 'avg_skill' => 0, 'partner_slot' => 1, 'combined_dupr' => null];
             $n++;
-            $hasBye = true;
         }
 
         $totalRounds = $n - 1;
         $rounds      = min($requestedRounds, $totalRounds);
-
-        $ids    = array_column($teams, 'id');
-        $lookup = array_combine($ids, $teams);
-
-        $roundsOut = [];
-
-        // Circle method: fix team[0], rotate the rest
-        $circle = array_slice($ids, 1);
+        $ids         = array_column($baseTeams, 'id');
+        $circle      = array_slice($ids, 1);
+        $roundsOut   = [];
 
         for ($r = 0; $r < $rounds; $r++) {
-            $matches = [];
-            $courtNum = $courtOffset;
+            $roundNum  = $r + 1;
+            $useAlt    = ($roundNum % 2 === 0) && !empty($altTeams);
+            $matches   = [];
+            $courtNum  = $courtOffset;
 
             $pairs = [[$ids[0], $circle[0]]];
             for ($i = 1; $i <= ($n / 2) - 1; $i++) {
                 $pairs[] = [$circle[$i], $circle[$n - 1 - $i]];
             }
 
-            foreach ($pairs as $pair) {
-                [$id1, $id2] = $pair;
-                $t1 = $lookup[$id1] ?? null;
-                $t2 = $lookup[$id2] ?? null;
-
-                // Skip bye matches
-                if (!$t1 || !$t2) continue;
+            foreach ($pairs as [$id1, $id2]) {
                 if ($id1 === 0 || $id2 === 0) continue;
 
+                $t1 = $lookup[$id1] ?? null;
+                $t2 = $lookup[$id2] ?? null;
+                if (!$t1 || !$t2) continue;
+
+                $altLabel = '';
+
+                // On even rounds, try to swap to slot-2 team for each team
+                if ($useAlt) {
+                    $alt1 = $this->swapToAlt($t1, $slot2ByPlayer, $lookup);
+                    $alt2 = $this->swapToAlt($t2, $slot2ByPlayer, $lookup);
+                    if ($alt1 !== null) { $t1 = $alt1; $altLabel = '2nd partner'; }
+                    if ($alt2 !== null) { $t2 = $alt2; $altLabel = $altLabel ? 'Alt partners' : '2nd partner'; }
+                }
+
                 $matches[] = [
-                    'team1_id' => $t1['id'],
-                    'team1'    => $t1['player1'] . ' / ' . $t1['player2'],
-                    'team2_id' => $t2['id'],
-                    'team2'    => $t2['player1'] . ' / ' . $t2['player2'],
-                    'court'    => (($courtNum - 1) % $courts) + $courtOffset,
+                    'team1_id'    => $t1['id'],
+                    'team1'       => $t1['player1'] . ' / ' . $t1['player2'],
+                    'team2_id'    => $t2['id'],
+                    'team2'       => $t2['player1'] . ' / ' . $t2['player2'],
+                    'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
+                    'alt_partner' => $altLabel,
                 ];
                 $courtNum++;
             }
 
-            $roundsOut[$r + 1] = $matches;
-
-            // Rotate circle
+            $roundsOut[$roundNum] = $matches;
             array_unshift($circle, array_pop($circle));
         }
 
         return $roundsOut;
+    }
+
+    /**
+     * If any player in $team has a slot-2 alternate, return the alternate team.
+     */
+    private function swapToAlt(array $team, array $slot2ByPlayer, array $lookup): ?array
+    {
+        foreach (['player1', 'player2'] as $key) {
+            $name = $team[$key] ?? '';
+            if (isset($slot2ByPlayer[$name])) {
+                $altId = $slot2ByPlayer[$name];
+                if (isset($lookup[$altId])) return $lookup[$altId];
+            }
+        }
+        return null;
     }
 
     /**

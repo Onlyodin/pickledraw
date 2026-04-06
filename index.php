@@ -76,7 +76,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $parsedData = $_SESSION['parsed_data'] ?? null;
 
         if ($parsedData) {
-            // ── Division overrides ─────────────────────────────────────────
+            // Ensure partner2 fields exist on all records (backward compat)
+            foreach ($parsedData as &$p) {
+                $p['partner2']          ??= null;
+                $p['partner2_matched']  ??= false;
+                $p['partner2_resolved'] ??= null;
+                $p['manual_partner2']   ??= null;
+            }
+            unset($p);
             $divisionOverrides = $_POST['player_division'] ?? [];
             foreach ($divisionOverrides as $playerIdx => $divVal) {
                 $playerIdx = (int)$playerIdx;
@@ -173,6 +180,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $band      = trim($_POST['new_division']   ?? 'band-30');
         $dupr      = trim($_POST['new_dupr']       ?? '');
         $partner   = trim($_POST['new_partner']    ?? '');
+        $partner2  = trim($_POST['new_partner2']   ?? '');
 
         if ($firstName === '' && $lastName === '') {
             $error = 'Please enter at least a first or last name.';
@@ -180,52 +188,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $fullName = trim("$firstName $lastName");
 
             $newPlayer = [
-                'name'             => $fullName,
-                'first_name'       => $firstName,
-                'last_name'        => $lastName,
-                'skill'            => skillBandMidpoint($band),
-                'skill_raw'        => skillBandDisplay($band),
-                'skill_band'       => $band,
-                'partner'          => $partner ?: null,
-                'partner_matched'  => false,
-                'partner_resolved' => null,
-                'manual_partner'   => null,
-                'division_manual'  => true,
-                'dupr'             => ($dupr !== '' && is_numeric($dupr)) ? (float)$dupr : null,
-                'attendee_id'      => '',
-                'order_id'         => '',
-                'ticket_class'     => '',
-                'checked_in'       => false,
-                'status'           => 'Manual',
-                'team_id'          => null,
+                'name'              => $fullName,
+                'first_name'        => $firstName,
+                'last_name'         => $lastName,
+                'skill'             => skillBandMidpoint($band),
+                'skill_raw'         => skillBandDisplay($band),
+                'skill_band'        => $band,
+                'partner'           => $partner ?: null,
+                'partner_matched'   => false,
+                'partner_resolved'  => null,
+                'manual_partner'    => null,
+                'partner2'          => $partner2 ?: null,
+                'partner2_matched'  => false,
+                'partner2_resolved' => null,
+                'manual_partner2'   => null,
+                'division_manual'   => true,
+                'dupr'              => ($dupr !== '' && is_numeric($dupr)) ? (float)$dupr : null,
+                'attendee_id'       => '',
+                'order_id'          => '',
+                'ticket_class'      => '',
+                'checked_in'        => false,
+                'status'            => 'Manual',
+                'team_id'           => null,
             ];
 
-            // Try to match partner by name if provided
+            $newIdx = count($parsedData);
+
+            // Try to match primary partner
             if ($partner !== '') {
                 foreach ($parsedData as $j => $p) {
                     if (strcasecmp($p['name'], $partner) === 0) {
                         $newPlayer['partner_matched']  = true;
                         $newPlayer['partner_resolved'] = $p['name'];
-                        // Mirror on the existing player too
                         $parsedData[$j]['partner_matched']  = true;
                         $parsedData[$j]['partner_resolved'] = $fullName;
-                        $parsedData[$j]['manual_partner']   = count($parsedData); // will be new index
+                        $parsedData[$j]['manual_partner']   = $newIdx;
+                        break;
+                    }
+                }
+            }
+
+            // Try to match secondary partner
+            if ($partner2 !== '') {
+                foreach ($parsedData as $j => $p) {
+                    if (strcasecmp($p['name'], $partner2) === 0) {
+                        $newPlayer['partner2_matched']  = true;
+                        $newPlayer['partner2_resolved'] = $p['name'];
+                        if (!$parsedData[$j]['partner_matched']) {
+                            $parsedData[$j]['partner_matched']  = true;
+                            $parsedData[$j]['partner_resolved'] = $fullName;
+                            $parsedData[$j]['manual_partner']   = $newIdx;
+                        }
                         break;
                     }
                 }
             }
 
             $parsedData[] = $newPlayer;
-
-            // Fix the manual_partner index now we know the new player's index
-            $newIdx = array_key_last($parsedData);
-            foreach ($parsedData as $j => &$p) {
-                if (isset($p['manual_partner']) && $p['manual_partner'] === $newIdx - 1 && $j !== $newIdx) {
-                    // already pointing correctly via the count() above
-                    $p['manual_partner'] = $newIdx;
-                }
-            }
-            unset($p);
 
             $_SESSION['parsed_data'] = $parsedData;
             $_SESSION['draws']       = [];
@@ -281,7 +300,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['teams']       = [];
         }
     }
-}
+
+} // end if POST
+
 // ── Load from session ─────────────────────────────────────────────────────────
 if (empty($teams) && !empty($_SESSION['teams'])) {
     $teams = $_SESSION['teams'];
@@ -521,7 +542,14 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                         </td>
 
                         <td class="td-partner">
-                            <?= htmlspecialchars($player['partner'] ?? '—') ?>
+                            <?php
+                            $p1 = $player['partner'] ?? null;
+                            $p2 = $player['partner2'] ?? null;
+                            if ($p1) echo htmlspecialchars($p1);
+                            if ($p1 && $p2) echo '<br><span class="partner2-label">+ </span>';
+                            if ($p2) echo '<span class="partner2-label">' . htmlspecialchars($p2) . '</span>';
+                            if (!$p1 && !$p2) echo '—';
+                            ?>
                         </td>
 
                         <td class="td-pairing">
@@ -696,6 +724,9 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                 <?php if ($team['explicit_pair']): ?>
                     <span class="pair-tag">✓ paired</span>
                 <?php endif; ?>
+                <?php if (($team['partner_slot'] ?? 1) === 2): ?>
+                    <span class="alt-pair-tag">2nd partner</span>
+                <?php endif; ?>
             </div>
             <?php endforeach; ?>
         </div>
@@ -713,6 +744,9 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                         Court <?= $match['court'] ?>
                         <?php if (!empty($match['pool'])): ?>
                             <span class="pool-tag"><?= htmlspecialchars($match['pool']) ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($match['alt_partner'])): ?>
+                            <span class="alt-round-tag">↕ <?= htmlspecialchars($match['alt_partner']) ?></span>
                         <?php endif; ?>
                     </div>
                     <div class="match-teams">
@@ -789,11 +823,25 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
 
             <div class="modal-row">
                 <div class="modal-field modal-field-full">
-                    <label class="form-label" for="new_partner">Partner Name <span class="label-optional">(optional — must match an existing player)</span></label>
+                    <label class="form-label" for="new_partner">Partner 1 Name <span class="label-optional">(optional — must match an existing player)</span></label>
                     <input type="text" id="new_partner" name="new_partner"
                            class="form-input" placeholder="e.g. John Doe"
                            list="existingPlayersList" autocomplete="off">
                     <datalist id="existingPlayersList">
+                        <?php foreach ($parsedData as $p): ?>
+                            <option value="<?= htmlspecialchars($p['name']) ?>">
+                        <?php endforeach; ?>
+                    </datalist>
+                </div>
+            </div>
+
+            <div class="modal-row">
+                <div class="modal-field modal-field-full">
+                    <label class="form-label" for="new_partner2">Partner 2 Name <span class="label-optional">(optional — for players alternating between two partners)</span></label>
+                    <input type="text" id="new_partner2" name="new_partner2"
+                           class="form-input" placeholder="e.g. Jane Smith"
+                           list="existingPlayersList2" autocomplete="off">
+                    <datalist id="existingPlayersList2">
                         <?php foreach ($parsedData as $p): ?>
                             <option value="<?= htmlspecialchars($p['name']) ?>">
                         <?php endforeach; ?>
@@ -819,12 +867,13 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
 <?php if (!empty($parsedData)): ?>
 <script>
 const ATTENDEES = <?= json_encode(array_map(fn($i, $p) => [
-    'idx'            => $i,
-    'name'           => $p['name'],
-    'skill_raw'      => $p['skill_raw'],
-    'skill_band'     => $p['skill_band'],
-    'dupr'           => $p['dupr'] ?? null,
-    'partner_matched'=> $p['partner_matched'],
+    'idx'             => $i,
+    'name'            => $p['name'],
+    'skill_raw'       => $p['skill_raw'],
+    'skill_band'      => $p['skill_band'],
+    'dupr'            => $p['dupr'] ?? null,
+    'partner_matched' => $p['partner_matched'],
+    'has_partner2'    => !empty($p['partner2']),
 ], array_keys($parsedData), $parsedData), JSON_HEX_TAG) ?>;
 </script>
 <?php endif; ?>
