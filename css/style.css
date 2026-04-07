@@ -860,6 +860,27 @@ body {
 
 .match-card:hover { border-color: rgba(93,217,122,0.4); }
 
+/* Bye or Singles card variant */
+.match-card-bye {
+    border-color: rgba(106,138,114,0.35);
+    background: rgba(106,138,114,0.06);
+    opacity: 0.85;
+}
+
+.match-card-bye:hover { border-color: rgba(106,138,114,0.6); }
+
+.bye-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    text-align: center;
+    padding: 0.25rem 0 0.1rem;
+    border-top: 1px dashed var(--border);
+    margin-top: 0.25rem;
+}
+
 .match-court {
     font-size: 0.7rem;
     font-weight: 600;

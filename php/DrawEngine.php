@@ -171,17 +171,21 @@ class DrawEngine
         return null;
     }
 
+
     // -----------------------------------------------------------------------
     // SKILL DIVISION GROUPING
     // Fixed pickleball bands: Under 2.5 | 2.5–2.99 | 3.0–3.49 | 3.5–3.99 | 4.0+
-    // When fewer bands requested, bands are merged from the bottom up.
+    // When numBands === 1 all teams are placed in a single division.
     // -----------------------------------------------------------------------
 
     private function groupBySkill(int $numBands): array
     {
         if (empty($this->teams)) return [];
 
-        // The 5 fixed pickleball skill bands (highest first = Division A)
+        if ($numBands <= 1) {
+            return ['All Teams' => $this->teams];
+        }
+
         $fixedBands = [
             'Division A (4.0+)'       => fn(float $s) => $s >= 4.0,
             'Division B (3.5–3.99)'   => fn(float $s) => $s >= 3.5 && $s < 4.0,
@@ -191,36 +195,28 @@ class DrawEngine
         ];
 
         if ($numBands >= 5) {
-            // Use all 5 fixed bands
             $divisions = [];
             foreach ($fixedBands as $label => $test) {
                 foreach ($this->teams as $team) {
-                    if ($test($team['avg_skill'])) {
-                        $divisions[$label][] = $team;
-                    }
+                    if ($test($team['avg_skill'])) $divisions[$label][] = $team;
                 }
             }
-            // Remove empty divisions
             return array_filter($divisions);
         }
 
-        // Fewer bands requested — fall back to dynamic equal-range splitting
-        $skills = array_column($this->teams, 'avg_skill');
-        $min    = min($skills);
-        $max    = max($skills);
+        $skills   = array_column($this->teams, 'avg_skill');
+        $min      = min($skills);
+        $max      = max($skills);
 
-        if ($max === $min) {
-            return ['Division A' => $this->teams];
-        }
+        if ($max === $min) return ['Division A' => $this->teams];
 
         $bandSize   = ($max - $min) / $numBands;
         $divLetters = range('A', 'Z');
         $divisions  = [];
 
         foreach ($this->teams as $team) {
-            $bandIdx = (int) floor(($team['avg_skill'] - $min) / $bandSize);
-            $bandIdx = min($bandIdx, $numBands - 1);
-            $divIdx  = ($numBands - 1) - $bandIdx; // highest skill = A
+            $bandIdx = min((int)floor(($team['avg_skill'] - $min) / $bandSize), $numBands - 1);
+            $divIdx  = ($numBands - 1) - $bandIdx;
             $divName = 'Division ' . ($divLetters[$divIdx] ?? ($divIdx + 1));
             $divisions[$divName][] = $team;
         }
@@ -231,151 +227,292 @@ class DrawEngine
 
     // -----------------------------------------------------------------------
     // DRAW GENERATION
+    //
+    // Cross-division pairing:
+    //   When a division has an odd number of slot-1 teams, the team with skill
+    //   closest to the boundary borrows the nearest team from an adjacent
+    //   division to make the count even.
+    //
+    // Bye/Singles with court:
+    //   When the total number of slot-1 teams (after cross-division pairing) is
+    //   still odd, one team sits out each round.  They are assigned a real court
+    //   and displayed as "Bye or Singles".  A deficit counter ensures the bye
+    //   rotates as evenly as possible across all teams.
     // -----------------------------------------------------------------------
 
     private function buildDraw(array $divisions, int $rounds, string $format, int $courts): array
     {
-        $draws = [];
+        $draws        = [];
         $courtCounter = 1;
 
-        foreach ($divisions as $divName => $teams) {
-            // Sort teams within division: combined DUPR descending (if available),
-            // then avg_skill descending as fallback. This ensures similarly-skilled
-            // DUPR-rated teams are seeded close together.
-            usort($teams, function (array $a, array $b) {
-                $aDupr = $a['combined_dupr'] ?? null;
-                $bDupr = $b['combined_dupr'] ?? null;
-
-                if ($aDupr !== null && $bDupr !== null) {
-                    return $bDupr <=> $aDupr; // both have DUPR — sort by it
+        if ($format !== 'round_robin') {
+            foreach ($divisions as $divName => $teams) {
+                $teams = $this->sortByDuprThenSkill($teams);
+                $draws[$divName] = $this->makeDivisionEntry($teams);
+                if (count($teams) < 2) {
+                    $draws[$divName]['rounds'][1] = [['note' => 'Only one team — awaiting more players.']];
+                    continue;
                 }
-                if ($aDupr !== null) return -1; // a has DUPR, b doesn't — a first
-                if ($bDupr !== null) return 1;  // b has DUPR, a doesn't — b first
-                return $b['avg_skill'] <=> $a['avg_skill']; // neither — fall back
-            });
-
-            // Compute DUPR stats for the division
-            $duprValues  = array_filter(array_column($teams, 'combined_dupr'), fn($v) => $v !== null);
-            $duprAvg     = count($duprValues) > 0 ? round(array_sum($duprValues) / count($duprValues), 2) : null;
-
-            $draws[$divName] = [
-                'teams'     => $teams,
-                'avg_skill' => round(array_sum(array_column($teams, 'avg_skill')) / count($teams), 2),
-                'dupr_avg'  => $duprAvg,
-                'rounds'    => [],
-            ];
-
-            if (count($teams) < 2) {
-                $draws[$divName]['rounds'][1] = [['note' => 'Only one team in this division — awaiting more players.']];
-                continue;
+                $draws[$divName]['rounds'] = $format === 'elimination'
+                    ? $this->buildElimination($teams, $courts, $courtCounter)
+                    : $this->buildPools($teams, $rounds, $courts, $courtCounter);
+                $courtCounter += $courts;
             }
+            return $draws;
+        }
 
-            switch ($format) {
-                case 'elimination':
-                    $draws[$divName]['rounds'] = $this->buildElimination($teams, $courts, $courtCounter);
-                    break;
-                case 'pools':
-                    $draws[$divName]['rounds'] = $this->buildPools($teams, $rounds, $courts, $courtCounter);
-                    break;
-                default:
-                    $draws[$divName]['rounds'] = $this->buildRoundRobin($teams, $rounds, $courts, $courtCounter);
+        // ── Round Robin ───────────────────────────────────────────────────────
+
+        if (count($divisions) === 1) {
+            // Single division — simple path
+            $divName   = array_key_first($divisions);
+            $allTeams  = $this->sortByDuprThenSkill($divisions[$divName]);
+            $baseTeams = array_values(array_filter($allTeams, fn($t) => ($t['partner_slot'] ?? 1) === 1));
+            $altTeams  = array_values(array_filter($allTeams, fn($t) => ($t['partner_slot'] ?? 1) === 2));
+
+            $draws[$divName] = $this->makeDivisionEntry($allTeams);
+            $draws[$divName]['rounds'] = $this->buildRoundRobin(
+                $baseTeams, $altTeams, $rounds, $courts, $courtCounter
+            );
+        } else {
+            // Multiple divisions — cross-pair odd divisions
+            $divNames  = array_keys($divisions);
+            $divArrays = array_values($divisions);
+            $numDivs   = count($divArrays);
+
+            for ($d = 0; $d < $numDivs; $d++) {
+                $divTeams  = $this->sortByDuprThenSkill($divArrays[$d]);
+                $baseTeams = array_values(array_filter($divTeams, fn($t) => ($t['partner_slot'] ?? 1) === 1));
+                $altTeams  = array_values(array_filter($divTeams, fn($t) => ($t['partner_slot'] ?? 1) === 2));
+
+                if (count($baseTeams) % 2 !== 0) {
+                    $borrowed = $this->borrowTeamFromAdjacent($baseTeams, $divArrays, $d, $numDivs);
+                    if ($borrowed !== null) {
+                        $borrowed['_borrowed'] = true;
+                        $baseTeams[] = $borrowed;
+                    }
+                }
+
+                $draws[$divNames[$d]] = $this->makeDivisionEntry(array_values($divArrays[$d]));
+                $draws[$divNames[$d]]['rounds'] = $this->buildRoundRobin(
+                    $baseTeams, $altTeams, $rounds, $courts, $courtCounter
+                );
+                $courtCounter += $courts;
             }
-
-            $courtCounter += $courts;
         }
 
         return $draws;
     }
 
-    /**
-     * Round robin using circle method algorithm.
-     * Ensures every team plays every other team, minimising repeat matchups.
-
-    /**
-     * Round robin using circle method.
-     *
-     * Two-partner alternation:
-     *   - Slot-1 teams form the base draw schedule.
-     *   - On even rounds, any player who has a slot-2 team plays with partner2 instead.
-     *   - The slot-2 team substitutes in; the slot-1 team sits that round.
-     *   - Match display notes which rounds use alternate partners.
-     */
-    private function buildRoundRobin(array $teams, int $requestedRounds, int $courts, int $courtOffset): array
+    private function sortByDuprThenSkill(array $teams): array
     {
-        // Separate slot-1 (base) and slot-2 (alternate) teams
-        $baseTeams = array_values(array_filter($teams, fn($t) => ($t['partner_slot'] ?? 1) === 1));
-        $altTeams  = array_values(array_filter($teams, fn($t) => ($t['partner_slot'] ?? 1) === 2));
+        usort($teams, function ($a, $b) {
+            $aD = $a['combined_dupr'] ?? null;
+            $bD = $b['combined_dupr'] ?? null;
+            if ($aD !== null && $bD !== null) return $bD <=> $aD;
+            if ($aD !== null) return -1;
+            if ($bD !== null) return 1;
+            return ($b['avg_skill'] ?? 0) <=> ($a['avg_skill'] ?? 0);
+        });
+        return $teams;
+    }
 
-        // Build full lookup for all teams
+    private function makeDivisionEntry(array $teams): array
+    {
+        $base    = array_filter($teams, fn($t) => ($t['partner_slot'] ?? 1) === 1);
+        $skills  = array_column(array_values($base), 'avg_skill');
+        $duprs   = array_filter(array_column(array_values($base), 'combined_dupr'), fn($v) => $v !== null);
+        return [
+            'teams'     => array_values($teams),
+            'avg_skill' => count($skills) ? round(array_sum($skills) / count($skills), 2) : 0,
+            'dupr_avg'  => count($duprs)  ? round(array_sum($duprs)  / count($duprs),  2) : null,
+            'rounds'    => [],
+        ];
+    }
+
+    private function borrowTeamFromAdjacent(array $baseTeams, array $divArrays, int $divIdx, int $numDivs): ?array
+    {
+        $boundary   = min(array_column($baseTeams, 'avg_skill'));
+        $candidates = [];
+
+        if ($divIdx + 1 < $numDivs) {
+            foreach ($divArrays[$divIdx + 1] as $t) {
+                if (($t['partner_slot'] ?? 1) === 1) {
+                    $candidates[] = ['team' => $t, 'gap' => abs($t['avg_skill'] - $boundary)];
+                }
+            }
+        }
+        if (empty($candidates) && $divIdx - 1 >= 0) {
+            $boundary = max(array_column($baseTeams, 'avg_skill'));
+            foreach ($divArrays[$divIdx - 1] as $t) {
+                if (($t['partner_slot'] ?? 1) === 1) {
+                    $candidates[] = ['team' => $t, 'gap' => abs($t['avg_skill'] - $boundary)];
+                }
+            }
+        }
+
+        if (empty($candidates)) return null;
+        usort($candidates, fn($a, $b) => $a['gap'] <=> $b['gap']);
+        return $candidates[0]['team'];
+    }
+
+    /**
+     * Round Robin — circle method with bye-deficit rotation and alt-partner support.
+     *
+     * Bye rotation:
+     *   When $baseTeams count is odd, one team sits out each round.
+     *   The team selected is the one with the highest bye_deficit (most
+     *   overdue for a bye). Playing increments deficit; sitting out decrements
+     *   it, keeping the bye distribution as even as possible.
+     *   The sitting-out team is assigned a real court and shown as "Bye or Singles".
+     *
+     * Alt-partner alternation:
+     *   Even rounds prefer slot-2 teams where available.
+     */
+    private function buildRoundRobin(
+        array $baseTeams, array $altTeams, int $requestedRounds, int $courts, int $courtOffset
+    ): array {
+        if (empty($baseTeams)) return [];
+
         $lookup = [];
-        foreach ($teams as $t) { $lookup[$t['id']] = $t; }
+        foreach (array_merge($baseTeams, $altTeams) as $t) {
+            $lookup[$t['id']] = $t;
+        }
 
-        // Build player → slot2 team id map (keyed by player1 name)
         $slot2ByPlayer = [];
         foreach ($altTeams as $t) {
             $slot2ByPlayer[$t['player1']] = $t['id'];
             $slot2ByPlayer[$t['player2']] = $t['id'];
         }
 
-        $n = count($baseTeams);
-        if ($n === 0) return [];
+        $ids    = array_column($baseTeams, 'id');
+        $n      = count($ids);
+        $isOdd  = $n % 2 !== 0;
 
-        // Add bye if odd
-        if ($n % 2 !== 0) {
-            $baseTeams[] = ['id' => 0, 'player1' => 'BYE', 'player2' => '', 'avg_skill' => 0, 'partner_slot' => 1, 'combined_dupr' => null];
-            $n++;
-        }
-
-        $totalRounds = $n - 1;
+        // Total rounds in a full round-robin: n for odd (each team has one bye), n-1 for even
+        $totalRounds = $isOdd ? $n : $n - 1;
         $rounds      = min($requestedRounds, $totalRounds);
-        $ids         = array_column($baseTeams, 'id');
-        $circle      = array_slice($ids, 1);
-        $roundsOut   = [];
+
+        // Bye deficit: higher = more overdue for a bye round
+        $byeDeficit = array_fill_keys($ids, 0.0);
+
+        $roundsOut = [];
 
         for ($r = 0; $r < $rounds; $r++) {
-            $roundNum  = $r + 1;
-            $useAlt    = ($roundNum % 2 === 0) && !empty($altTeams);
-            $matches   = [];
-            $courtNum  = $courtOffset;
+            $roundNum = $r + 1;
+            $useAlt   = ($roundNum % 2 === 0) && !empty($altTeams);
+            $matches  = [];
+            $courtNum = $courtOffset;
 
-            $pairs = [[$ids[0], $circle[0]]];
-            for ($i = 1; $i <= ($n / 2) - 1; $i++) {
-                $pairs[] = [$circle[$i], $circle[$n - 1 - $i]];
-            }
+            if ($isOdd) {
+                // Pick the team most overdue for a bye
+                arsort($byeDeficit);
+                $byeId     = (int)array_key_first($byeDeficit);
+                $activeIds = array_values(array_filter($ids, fn($id) => $id !== $byeId));
 
-            foreach ($pairs as [$id1, $id2]) {
-                if ($id1 === 0 || $id2 === 0) continue;
+                // Pairs from the remaining even-count teams
+                $pairs = $this->circleMethodPairs($activeIds, $r, $n);
 
-                $t1 = $lookup[$id1] ?? null;
-                $t2 = $lookup[$id2] ?? null;
-                if (!$t1 || !$t2) continue;
+                foreach ($pairs as [$id1, $id2]) {
+                    $t1 = $lookup[$id1] ?? null;
+                    $t2 = $lookup[$id2] ?? null;
+                    if (!$t1 || !$t2) continue;
 
-                $altLabel = '';
+                    $altLabel = '';
+                    if ($useAlt) {
+                        $a1 = $this->swapToAlt($t1, $slot2ByPlayer, $lookup);
+                        $a2 = $this->swapToAlt($t2, $slot2ByPlayer, $lookup);
+                        if ($a1) { $t1 = $a1; $altLabel = '2nd partner'; }
+                        if ($a2) { $t2 = $a2; $altLabel = $altLabel ? 'Alt partners' : '2nd partner'; }
+                    }
 
-                // On even rounds, try to swap to slot-2 team for each team
-                if ($useAlt) {
-                    $alt1 = $this->swapToAlt($t1, $slot2ByPlayer, $lookup);
-                    $alt2 = $this->swapToAlt($t2, $slot2ByPlayer, $lookup);
-                    if ($alt1 !== null) { $t1 = $alt1; $altLabel = '2nd partner'; }
-                    if ($alt2 !== null) { $t2 = $alt2; $altLabel = $altLabel ? 'Alt partners' : '2nd partner'; }
+                    $matches[] = [
+                        'team1_id'    => $t1['id'],
+                        'team1'       => $t1['player1'] . ' / ' . $t1['player2'],
+                        'team2_id'    => $t2['id'],
+                        'team2'       => $t2['player1'] . ' / ' . $t2['player2'],
+                        'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
+                        'alt_partner' => $altLabel,
+                        'is_bye'      => false,
+                    ];
+                    $courtNum++;
+                    $byeDeficit[$id1] += 1;
+                    $byeDeficit[$id2] += 1;
                 }
 
-                $matches[] = [
-                    'team1_id'    => $t1['id'],
-                    'team1'       => $t1['player1'] . ' / ' . $t1['player2'],
-                    'team2_id'    => $t2['id'],
-                    'team2'       => $t2['player1'] . ' / ' . $t2['player2'],
-                    'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
-                    'alt_partner' => $altLabel,
-                ];
-                $courtNum++;
+                // Bye team gets a court — displayed as "Bye or Singles"
+                $byeTeam = $lookup[$byeId] ?? null;
+                if ($byeTeam) {
+                    $matches[] = [
+                        'team1_id'    => $byeTeam['id'],
+                        'team1'       => $byeTeam['player1'] . ' / ' . $byeTeam['player2'],
+                        'team2_id'    => 'BYE',
+                        'team2'       => '',
+                        'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
+                        'alt_partner' => '',
+                        'is_bye'      => true,
+                    ];
+                }
+                $byeDeficit[$byeId] -= 1;
+
+            } else {
+                // Even count — standard circle method
+                $pairs = $this->circleMethodPairs($ids, $r, $n);
+
+                foreach ($pairs as [$id1, $id2]) {
+                    $t1 = $lookup[$id1] ?? null;
+                    $t2 = $lookup[$id2] ?? null;
+                    if (!$t1 || !$t2) continue;
+
+                    $altLabel = '';
+                    if ($useAlt) {
+                        $a1 = $this->swapToAlt($t1, $slot2ByPlayer, $lookup);
+                        $a2 = $this->swapToAlt($t2, $slot2ByPlayer, $lookup);
+                        if ($a1) { $t1 = $a1; $altLabel = '2nd partner'; }
+                        if ($a2) { $t2 = $a2; $altLabel = $altLabel ? 'Alt partners' : '2nd partner'; }
+                    }
+
+                    $matches[] = [
+                        'team1_id'    => $t1['id'],
+                        'team1'       => $t1['player1'] . ' / ' . $t1['player2'],
+                        'team2_id'    => $t2['id'],
+                        'team2'       => $t2['player1'] . ' / ' . $t2['player2'],
+                        'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
+                        'alt_partner' => $altLabel,
+                        'is_bye'      => false,
+                    ];
+                    $courtNum++;
+                }
             }
 
             $roundsOut[$roundNum] = $matches;
-            array_unshift($circle, array_pop($circle));
         }
 
         return $roundsOut;
+    }
+
+    /**
+     * Generate pairs for round index $r using the circle method.
+     * $n is the total count of IDs (must be even).
+     */
+    private function circleMethodPairs(array $ids, int $r, int $n): array
+    {
+        $nLocal = count($ids);
+        if ($nLocal < 2 || $nLocal % 2 !== 0) return [];
+
+        $denominator = max($n - 1, 1);
+        $rotation    = $r % $denominator;
+
+        $circle = array_slice($ids, 1);
+        for ($rot = 0; $rot < $rotation; $rot++) {
+            array_unshift($circle, array_pop($circle));
+        }
+
+        $pairs = [[$ids[0], $circle[0]]];
+        for ($i = 1; $i <= ($nLocal / 2) - 1; $i++) {
+            $pairs[] = [$circle[$i], $circle[$nLocal - 1 - $i]];
+        }
+        return $pairs;
     }
 
     /**
@@ -385,17 +522,13 @@ class DrawEngine
     {
         foreach (['player1', 'player2'] as $key) {
             $name = $team[$key] ?? '';
-            if (isset($slot2ByPlayer[$name])) {
-                $altId = $slot2ByPlayer[$name];
-                if (isset($lookup[$altId])) return $lookup[$altId];
+            if (isset($slot2ByPlayer[$name]) && isset($lookup[$slot2ByPlayer[$name]])) {
+                return $lookup[$slot2ByPlayer[$name]];
             }
         }
         return null;
     }
 
-    /**
-     * Single elimination bracket.
-     */
     private function buildElimination(array $teams, int $courts, int $courtOffset): array
     {
         // Seed teams by skill descending

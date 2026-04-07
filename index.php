@@ -157,7 +157,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $engine = new DrawEngine($parsedData);
                 $result = $engine->generateDraw([
                     'rounds'      => (int)($_POST['rounds'] ?? 8),
-                    'skill_bands' => (int)($_POST['skill_bands'] ?? 5),
+                    'skill_bands' => (int)($_POST['skill_bands'] ?? 1),
                     'format'      => $_POST['format'] ?? 'round_robin',
                     'courts'      => (int)($_POST['courts'] ?? 11),
                 ]);
@@ -664,11 +664,11 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
             <div class="setting-card">
                 <label class="form-label">Skill Divisions</label>
                 <select name="skill_bands" class="form-select">
-                    <option value="1">1 — All play together</option>
+                    <option value="1" selected>1 — All play together</option>
                     <option value="2">2 — A / B</option>
                     <option value="3">3 — A / B / C</option>
                     <option value="4">4 — A / B / C / D</option>
-                    <option value="5" selected>5 — By pickleball rating</option>
+                    <option value="5">5 — By pickleball rating</option>
                 </select>
             </div>
         </div>
@@ -691,7 +691,7 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
         <span class="step-num">03</span>
         <div>
             <h2 class="step-title">Tournament Draw</h2>
-            <p class="step-desc"><?= count($teams) ?> teams across <?= count($draws) ?> division(s)</p>
+            <p class="step-desc"><?= count($teams) ?> teams<?= count($draws) > 1 ? ' across ' . count($draws) . ' divisions' : '' ?></p>
         </div>
         <div class="draw-actions">
             <button onclick="window.print()" class="btn-ghost">🖨 Print</button>
@@ -700,8 +700,10 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
         </div>
     </div>
 
+    <?php $singleDivision = count($draws) === 1; ?>
     <?php foreach ($draws as $divName => $divData): ?>
     <div class="division-block">
+        <?php if (!$singleDivision): ?>
         <div class="division-header">
             <span class="division-badge"><?= htmlspecialchars($divName) ?></span>
             <span class="division-info">
@@ -711,6 +713,7 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                 <?php endif; ?>
             </span>
         </div>
+        <?php endif; ?>
 
         <div class="teams-row">
             <?php foreach ($divData['teams'] as $team): ?>
@@ -737,9 +740,20 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
             <h4 class="round-title">Round <?= $roundNum ?></h4>
             <div class="matches-grid">
                 <?php foreach ($matches as $match): ?>
-                <div class="match-card">
+                <div class="match-card <?= !empty($match['is_bye']) ? 'match-card-bye' : '' ?>">
                     <?php if (isset($match['note'])): ?>
                         <div class="match-note"><?= htmlspecialchars($match['note']) ?></div>
+                    <?php elseif (!empty($match['is_bye'])): ?>
+                    <div class="match-court">
+                        Court <?= $match['court'] ?>
+                    </div>
+                    <div class="match-teams">
+                        <div class="match-team home" style="flex:1">
+                            <span class="match-team-id">#<?= $match['team1_id'] ?></span>
+                            <span class="match-team-name"><?= htmlspecialchars($match['team1']) ?></span>
+                        </div>
+                    </div>
+                    <div class="bye-label">Bye or Singles</div>
                     <?php else: ?>
                     <div class="match-court">
                         Court <?= $match['court'] ?>
