@@ -887,6 +887,37 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.1em;
     color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+/* Editable court number input */
+.court-input {
+    background: transparent;
+    border: none;
+    border-bottom: 1px dashed rgba(93,217,122,0.4);
+    color: var(--accent);
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-family: var(--font-body);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    width: 7rem;
+    padding: 0 0.1rem 0.1rem;
+    cursor: text;
+    transition: border-color 0.15s;
+}
+
+.court-input:focus {
+    outline: none;
+    border-bottom-color: var(--accent);
+    border-bottom-style: solid;
+}
+
+.court-input.court-modified {
+    color: var(--accent2);
+    border-bottom-color: var(--accent2);
 }
 
 .match-teams {
@@ -1137,6 +1168,16 @@ body {
     .step-section { border: 1px solid #ccc; }
     .match-card { break-inside: avoid; }
     .division-block { break-before: page; }
+
+    /* Court inputs: hide the input chrome, show value as plain text */
+    .court-input {
+        background: transparent !important;
+        border: none !important;
+        color: #333 !important;
+        font-weight: 700;
+        pointer-events: none;
+        width: auto;
+    }
 }
 
 /* ---- Responsive ---- */

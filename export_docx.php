@@ -171,41 +171,37 @@ $bodyParts[] = para(
 );
 
 if (!empty($teams)) {
-    // Column widths in twips (sum = 9360 = 6.5" content on letter with 1" margins)
-    $cw = [400, 1900, 1900, 1060, 1000, 1000, 1100]; // = 8360 — leaves gutter
+    // Full content width: Letter with 0.75" margins = 12240 - 2160 = 10080 twips
+    $cw = [2200, 2200, 1200, 1200, 1280, 2000]; // sum = 10080 — Player1, Player2, AvgSkill, CombSkill, DUPR, Pairing
 
     $teamRows = [];
 
-    // Header row
     $hFill = COL_GREEN;
     $hRpr  = ['bold' => true, 'size' => 8, 'color' => COL_WHITE, 'font' => 'Arial'];
     $teamRows[] = tr([
-        tc(para(wr('#',          $hRpr), ['align' => 'center']), $cw[0], $hFill),
-        tc(para(wr('Player 1',   $hRpr)),                        $cw[1], $hFill),
-        tc(para(wr('Player 2',   $hRpr)),                        $cw[2], $hFill),
-        tc(para(wr('Avg Skill',  $hRpr), ['align' => 'center']), $cw[3], $hFill),
-        tc(para(wr('Combined Skill', $hRpr), ['align' => 'center']), $cw[4], $hFill),
-        tc(para(wr('Comb DUPR',  $hRpr), ['align' => 'center']), $cw[5], $hFill),
-        tc(para(wr('Pairing',    $hRpr)),                        $cw[6], $hFill),
+        tc(para(wr('Player 1',       $hRpr)),                        $cw[0], $hFill),
+        tc(para(wr('Player 2',       $hRpr)),                        $cw[1], $hFill),
+        tc(para(wr('Avg Skill',      $hRpr), ['align' => 'center']), $cw[2], $hFill),
+        tc(para(wr('Comb Skill',     $hRpr), ['align' => 'center']), $cw[3], $hFill),
+        tc(para(wr('Comb DUPR',      $hRpr), ['align' => 'center']), $cw[4], $hFill),
+        tc(para(wr('Pairing',        $hRpr)),                        $cw[5], $hFill),
     ], true);
 
     foreach (array_values($teams) as $idx => $t) {
         $fill = ($idx % 2 === 1) ? COL_ALT_ROW : COL_WHITE;
         $rpr  = ['size' => 9, 'font' => 'Arial'];
-        $numRpr = ['size' => 9, 'font' => 'Arial', 'color' => COL_GREEN];
 
         $pairLabel = $t['explicit_pair']
             ? (($t['partner_slot'] ?? 1) === 2 ? '2nd partner' : 'Named pair')
             : 'Auto-paired';
 
         $teamRows[] = tr([
-            tc(para(wr((string)$t['id'], $numRpr), ['align' => 'center']),       $cw[0], $fill),
-            tc(para(wr($t['player1'] ?? '', $rpr)),                               $cw[1], $fill),
-            tc(para(wr($t['player2'] ?? '', $rpr)),                               $cw[2], $fill),
-            tc(para(wr(isset($t['avg_skill']) ? (string)$t['avg_skill'] : '', $rpr), ['align' => 'center']), $cw[3], $fill),
-            tc(para(wr(isset($t['combined_skill']) ? (string)$t['combined_skill'] : '', $rpr), ['align' => 'center']), $cw[4], $fill),
-            tc(para(wr($t['combined_dupr'] !== null ? (string)$t['combined_dupr'] : '—', $rpr), ['align' => 'center']), $cw[5], $fill),
-            tc(para(wr($pairLabel, $rpr)),                                        $cw[6], $fill),
+            tc(para(wr($t['player1'] ?? '', $rpr)),                                                                $cw[0], $fill),
+            tc(para(wr($t['player2'] ?? '', $rpr)),                                                                $cw[1], $fill),
+            tc(para(wr(isset($t['avg_skill'])      ? (string)$t['avg_skill']      : '', $rpr), ['align' => 'center']), $cw[2], $fill),
+            tc(para(wr(isset($t['combined_skill']) ? (string)$t['combined_skill'] : '', $rpr), ['align' => 'center']), $cw[3], $fill),
+            tc(para(wr($t['combined_dupr'] !== null ? (string)$t['combined_dupr'] : '—', $rpr), ['align' => 'center']), $cw[4], $fill),
+            tc(para(wr($pairLabel, $rpr)),                                                                         $cw[5], $fill),
         ]);
     }
 
@@ -247,9 +243,8 @@ foreach ($divNames as $divIdx => $divName) {
             ['before' => 80, 'after' => 60]
         );
 
-        $chipW   = 3120; // 3 columns in 9360 twips
+        $chipW   = 3360; // 3 columns × 3360 = 10080 twips (full content width)
         $chipRpr = ['size' => 8, 'font' => 'Arial'];
-        $numRpr  = ['size' => 8, 'font' => 'Arial', 'bold' => true, 'color' => COL_GREEN];
         $chipRows = [];
         $divTeams = array_values($divData['teams']);
 
@@ -262,7 +257,6 @@ foreach ($divNames as $divIdx => $divName) {
                         ? '  DUPR ' . $t['combined_dupr']
                         : '';
                     $cellContent = para([
-                        wr('#' . $t['id'] . '  ', $numRpr),
                         wr(($t['player1'] ?? '') . ' & ' . ($t['player2'] ?? ''), $chipRpr),
                         wr($duprPart, ['size' => 7, 'color' => COL_BLUE, 'font' => 'Arial']),
                     ]);
@@ -297,8 +291,8 @@ foreach ($divNames as $divIdx => $divName) {
             ['before' => 160, 'after' => 60]
         );
 
-        // Match table columns: Court | Team 1 | vs | Team 2 | Score
-        $mw  = [800, 3000, 420, 3000, 860]; // = 8080 twips
+        // Match table: Court | Team 1 | vs | Team 2 | Score — full content width
+        $mw  = [1000, 3880, 440, 3880, 880]; // sum = 10080 twips
         $hRpr = ['bold' => true, 'size' => 8, 'color' => COL_DARK, 'font' => 'Arial'];
         $mRows = [];
 
@@ -314,8 +308,9 @@ foreach ($divNames as $divIdx => $divName) {
             $fill = ($mIdx % 2 === 1) ? COL_ALT_ROW : COL_WHITE;
 
             if (!empty($m['note'])) {
+                $totalW   = array_sum($mw);
                 $noteCell = '<w:tc>'
-                    . '<w:tcPr><w:tcW w:w="' . array_sum($mw) . '" w:type="dxa"/>'
+                    . '<w:tcPr><w:tcW w:w="' . $totalW . '" w:type="dxa"/>'
                     . '<w:gridSpan w:val="5"/>'
                     . '<w:shd w:val="clear" w:color="auto" w:fill="' . COL_WHITE . '"/></w:tcPr>'
                     . para(wr($m['note'], ['size' => 8, 'italic' => true, 'color' => COL_MUTED, 'font' => 'Arial']))
@@ -324,10 +319,26 @@ foreach ($divNames as $divIdx => $divName) {
                 continue;
             }
 
-            $courtLabel  = !empty($m['court'])  ? 'Court ' . $m['court']  : '';
-            $altLabel    = !empty($m['alt_partner']) ? ' (' . $m['alt_partner'] . ')' : '';
-            $t1Label     = '#' . ($m['team1_id'] ?? '') . '  ' . ($m['team1'] ?? '');
-            $t2Label     = '#' . ($m['team2_id'] ?? '') . '  ' . ($m['team2'] ?? '') . $altLabel;
+            $courtLabel = !empty($m['court']) ? 'Court ' . $m['court'] : '';
+            $altLabel   = !empty($m['alt_partner']) ? ' (' . $m['alt_partner'] . ')' : '';
+
+            if (!empty($m['is_bye'])) {
+                // Bye or Singles row — span team2 and score cells
+                $t1Rpr      = ['size' => 9, 'font' => 'Arial', 'italic' => true, 'color' => COL_MUTED];
+                $byeSpanW   = $mw[2] + $mw[3] + $mw[4];
+                $byeCell    = '<w:tc>'
+                    . '<w:tcPr><w:tcW w:w="' . $byeSpanW . '" w:type="dxa"/>'
+                    . '<w:gridSpan w:val="3"/>'
+                    . '<w:shd w:val="clear" w:color="auto" w:fill="' . $fill . '"/></w:tcPr>'
+                    . para(wr('Bye or Singles', ['size' => 8, 'italic' => true, 'color' => COL_MUTED, 'font' => 'Arial']), ['align' => 'center'])
+                    . '</w:tc>';
+                $mRows[] = '<w:tr>'
+                    . tc(para(wr($courtLabel, ['size' => 9, 'font' => 'Arial']), ['align' => 'center']), $mw[0], $fill)
+                    . tc(para(wr($m['team1'] ?? '', $t1Rpr)),                                            $mw[1], $fill)
+                    . $byeCell
+                    . '</w:tr>';
+                continue;
+            }
 
             $t1Rpr = ['size' => 9, 'font' => 'Arial'];
             $t2Rpr = $altLabel
@@ -335,11 +346,11 @@ foreach ($divNames as $divIdx => $divName) {
                 : ['size' => 9, 'font' => 'Arial'];
 
             $mRows[] = tr([
-                tc(para(wr($courtLabel, ['size' => 9, 'font' => 'Arial']), ['align' => 'center']), $mw[0], $fill),
-                tc(para(wr($t1Label,    $t1Rpr)),                                                  $mw[1], $fill),
-                tc(para(wr('vs',        ['size' => 9, 'font' => 'Arial']), ['align' => 'center']), $mw[2], $fill),
-                tc(para(wr($t2Label,    $t2Rpr)),                                                  $mw[3], $fill),
-                tc(para(wr('',          ['size' => 9, 'font' => 'Arial'])),                        $mw[4], $fill),
+                tc(para(wr($courtLabel,                          ['size' => 9, 'font' => 'Arial']), ['align' => 'center']), $mw[0], $fill),
+                tc(para(wr($m['team1'] ?? '',                    $t1Rpr)),                                                  $mw[1], $fill),
+                tc(para(wr('vs',                                 ['size' => 9, 'font' => 'Arial']), ['align' => 'center']), $mw[2], $fill),
+                tc(para(wr(($m['team2'] ?? '') . $altLabel,      $t2Rpr)),                                                  $mw[3], $fill),
+                tc(para(wr('',                                   ['size' => 9, 'font' => 'Arial'])),                        $mw[4], $fill),
             ]);
         }
 
@@ -451,7 +462,7 @@ $header1 = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
       <w:tabs><w:tab w:val="right" w:pos="9360"/></w:tabs>
     </w:pPr>
     <w:r><w:rPr><w:rStyle w:val="HeaderChar"/></w:rPr>
-      <w:t>PICKLEDRAW  \u00B7  Tournament Draw</w:t>
+      <w:t xml:space="preserve">PICKLEDRAW  ·  Tournament Draw</w:t>
     </w:r>
     <w:r><w:rPr><w:rStyle w:val="HeaderChar"/></w:rPr><w:tab/></w:r>
     <w:r><w:rPr><w:rStyle w:val="HeaderChar"/></w:rPr>

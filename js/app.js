@@ -398,7 +398,6 @@
     };
 
     // ── Highlight newly-added row on page load ────────────────────────────────
-    // PHP marks manually added players with data-manual="1"
     const newRow = document.querySelector('tr[data-manual="1"]:last-child');
     if (newRow) {
         newRow.classList.add('row-new');
@@ -407,19 +406,76 @@
         }, 100);
     }
 
-    // ── Auto-scroll: draw output takes priority; otherwise scroll to table ────
-    const drawSection = document.getElementById('step-draw');
-    if (drawSection) {
+    // ── Auto-scroll logic ─────────────────────────────────────────────────────
+    // Priority order:
+    //   1. After successful save_pairings → scroll to Configure Draw (step-settings)
+    //   2. After generating draw → scroll to draw output (step-draw)
+    //   3. After add/delete player → scroll table into view
+    const drawSection     = document.getElementById('step-draw');
+    const configSection   = document.getElementById('step-settings');
+    const scrollToCfg     = (typeof SCROLL_TO_CONFIGURE !== 'undefined') && SCROLL_TO_CONFIGURE;
+
+    if (scrollToCfg && configSection) {
+        setTimeout(() => {
+            configSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 200);
+    } else if (drawSection) {
         setTimeout(() => {
             drawSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 250);
     } else {
-        // After add/delete, scroll so user sees the updated table
         const table = document.getElementById('attendeeTable');
         if (table && (document.referrer.includes('index.php') || performance?.navigation?.type === 1)) {
             setTimeout(() => table.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
         }
     }
+
+    // ── Court number inputs ───────────────────────────────────────────────────
+    // Court inputs in match cards are editable. Changes are highlighted amber.
+    // Double-clicking resets to the generated default.
+    // Values survive within the page session via a Map keyed by input element.
+
+    function initCourtInputs() {
+        document.querySelectorAll('.court-input').forEach(input => {
+            const defaultVal = input.dataset.default || input.value;
+
+            // Mark as modified if value differs from default on init
+            // (e.g. after a page reload with saved state — not applicable here but defensive)
+            if (input.value !== defaultVal) {
+                input.classList.add('court-modified');
+            }
+
+            input.addEventListener('input', () => {
+                const changed = input.value.trim() !== defaultVal.trim();
+                input.classList.toggle('court-modified', changed);
+            });
+
+            // Double-click to reset to generated default
+            input.addEventListener('dblclick', () => {
+                input.value = defaultVal;
+                input.classList.remove('court-modified');
+                // Brief flash to confirm reset
+                input.style.transition = 'color 0.15s';
+                input.style.color = 'var(--green)';
+                setTimeout(() => { input.style.color = ''; }, 400);
+            });
+
+            // Select all text on focus for easy overtyping
+            input.addEventListener('focus', () => {
+                input.select();
+            });
+
+            // On blur, clean up empty values
+            input.addEventListener('blur', () => {
+                if (input.value.trim() === '') {
+                    input.value = defaultVal;
+                    input.classList.remove('court-modified');
+                }
+            });
+        });
+    }
+
+    initCourtInputs();
 
     // ── Ctrl+Enter submits active form ────────────────────────────────────────
     document.querySelectorAll('form').forEach(form => {

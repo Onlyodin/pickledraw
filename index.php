@@ -142,6 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $_SESSION['parsed_data'] = $parsedData;
+            $_SESSION['scroll_to_configure'] = true;
         }
         // Fall through — re-render with updated data
     }
@@ -312,6 +313,10 @@ if (empty($parsedData) && !empty($_SESSION['parsed_data'])) {
     $parsedData = $_SESSION['parsed_data'];
 }
 $columnMap = $_SESSION['column_map'] ?? [];
+
+// Consume the scroll-to-configure flag (one-shot)
+$scrollToConfigure = !empty($_SESSION['scroll_to_configure']);
+unset($_SESSION['scroll_to_configure']);
 
 // ── Counts ────────────────────────────────────────────────────────────────────
 $matchedCount   = $parsedData ? count(array_filter($parsedData, fn($p) => $p['partner_matched']))  : 0;
@@ -718,7 +723,6 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
         <div class="teams-row">
             <?php foreach ($divData['teams'] as $team): ?>
             <div class="team-chip">
-                <span class="team-num"><?= $team['id'] ?></span>
                 <span class="team-names"><?= htmlspecialchars($team['player1']) ?> &amp; <?= htmlspecialchars($team['player2']) ?></span>
                 <?php if ($team['combined_dupr'] !== null): ?>
                     <span class="team-dupr" title="Combined DUPR">DUPR <?= $team['combined_dupr'] ?></span>
@@ -745,18 +749,25 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                         <div class="match-note"><?= htmlspecialchars($match['note']) ?></div>
                     <?php elseif (!empty($match['is_bye'])): ?>
                     <div class="match-court">
-                        Court <?= $match['court'] ?>
+                        <input type="text"
+                               class="court-input"
+                               value="Court <?= (int)$match['court'] ?>"
+                               data-default="Court <?= (int)$match['court'] ?>"
+                               aria-label="Court number">
                     </div>
                     <div class="match-teams">
                         <div class="match-team home" style="flex:1">
-                            <span class="match-team-id">#<?= $match['team1_id'] ?></span>
                             <span class="match-team-name"><?= htmlspecialchars($match['team1']) ?></span>
                         </div>
                     </div>
                     <div class="bye-label">Bye or Singles</div>
                     <?php else: ?>
                     <div class="match-court">
-                        Court <?= $match['court'] ?>
+                        <input type="text"
+                               class="court-input"
+                               value="Court <?= (int)$match['court'] ?>"
+                               data-default="Court <?= (int)$match['court'] ?>"
+                               aria-label="Court number">
                         <?php if (!empty($match['pool'])): ?>
                             <span class="pool-tag"><?= htmlspecialchars($match['pool']) ?></span>
                         <?php endif; ?>
@@ -766,12 +777,10 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                     </div>
                     <div class="match-teams">
                         <div class="match-team home">
-                            <span class="match-team-id">#<?= $match['team1_id'] ?></span>
                             <span class="match-team-name"><?= htmlspecialchars($match['team1']) ?></span>
                         </div>
                         <div class="match-vs">VS</div>
                         <div class="match-team away">
-                            <span class="match-team-id">#<?= $match['team2_id'] ?></span>
                             <span class="match-team-name"><?= htmlspecialchars($match['team2']) ?></span>
                         </div>
                     </div>
@@ -890,6 +899,7 @@ const ATTENDEES = <?= json_encode(array_map(fn($i, $p) => [
     'partner_matched' => $p['partner_matched'],
     'has_partner2'    => !empty($p['partner2']),
 ], array_keys($parsedData), $parsedData), JSON_HEX_TAG) ?>;
+const SCROLL_TO_CONFIGURE = <?= $scrollToConfigure ? 'true' : 'false' ?>;
 </script>
 <?php endif; ?>
 
