@@ -368,6 +368,9 @@ class DrawEngine
      *
      * Alt-partner alternation:
      *   Even rounds prefer slot-2 teams where available.
+     *   IMPORTANT: A slot-2 swap is only applied if neither player in the alt team
+     *   is already committed to another match in the same round. This prevents a
+     *   player with two partners from appearing in two games simultaneously.
      */
     private function buildRoundRobin(
         array $baseTeams, array $altTeams, int $requestedRounds, int $courts, int $courtOffset
@@ -389,7 +392,7 @@ class DrawEngine
         $n      = count($ids);
         $isOdd  = $n % 2 !== 0;
 
-        // Total rounds in a full round-robin: n for odd (each team has one bye), n-1 for even
+        // Total rounds in a full round-robin: n for odd, n-1 for even
         $totalRounds = $isOdd ? $n : $n - 1;
         $rounds      = min($requestedRounds, $totalRounds);
 
@@ -404,43 +407,114 @@ class DrawEngine
             $matches  = [];
             $courtNum = $courtOffset;
 
+            // Determine base pairs for this round
             if ($isOdd) {
-                // Pick the team most overdue for a bye
                 arsort($byeDeficit);
                 $byeId     = (int)array_key_first($byeDeficit);
                 $activeIds = array_values(array_filter($ids, fn($id) => $id !== $byeId));
+                $pairs     = $this->circleMethodPairs($activeIds, $r, $n);
+            } else {
+                $byeId = null;
+                $pairs = $this->circleMethodPairs($ids, $r, $n);
+            }
 
-                // Pairs from the remaining even-count teams
-                $pairs = $this->circleMethodPairs($activeIds, $r, $n);
+            // ── Phase 1: resolve which team (slot-1 or slot-2) plays each pair ────
+            // We must determine ALL team assignments first before committing, so that
+            // we can detect and prevent a player appearing in two matches.
 
-                foreach ($pairs as [$id1, $id2]) {
-                    $t1 = $lookup[$id1] ?? null;
-                    $t2 = $lookup[$id2] ?? null;
-                    if (!$t1 || !$t2) continue;
+            // Build the set of players committed by slot-1 assignments
+            $committedPlayers = []; // player_name => true
 
-                    $altLabel = '';
-                    if ($useAlt) {
-                        $a1 = $this->swapToAlt($t1, $slot2ByPlayer, $lookup);
-                        $a2 = $this->swapToAlt($t2, $slot2ByPlayer, $lookup);
-                        if ($a1) { $t1 = $a1; $altLabel = '2nd partner'; }
-                        if ($a2) { $t2 = $a2; $altLabel = $altLabel ? 'Alt partners' : '2nd partner'; }
+            // First pass: record all slot-1 players for this round
+            foreach ($pairs as [$id1, $id2]) {
+                $t1 = $lookup[$id1] ?? null;
+                $t2 = $lookup[$id2] ?? null;
+                if (!$t1 || !$t2) continue;
+                $committedPlayers[$t1['player1']] = true;
+                $committedPlayers[$t1['player2']] = true;
+                $committedPlayers[$t2['player1']] = true;
+                $committedPlayers[$t2['player2']] = true;
+            }
+            // Also add the bye player as committed
+            if ($isOdd && $byeId !== null) {
+                $byeTeam = $lookup[$byeId] ?? null;
+                if ($byeTeam) {
+                    $committedPlayers[$byeTeam['player1']] = true;
+                    $committedPlayers[$byeTeam['player2']] = true;
+                }
+            }
+
+            // Second pass: resolve alt swaps, checking for conflicts
+            // When we swap a team to its alt, we temporarily "free" the slot-1 players
+            // and "commit" the alt players — but only if the alt players aren't
+            // already committed to a different match.
+            $resolvedPairs = [];
+            // Track which players are already locked into a resolved match
+            $lockedPlayers = [];
+
+            foreach ($pairs as [$id1, $id2]) {
+                $t1 = $lookup[$id1] ?? null;
+                $t2 = $lookup[$id2] ?? null;
+                if (!$t1 || !$t2) continue;
+
+                $altLabel = '';
+
+                if ($useAlt) {
+                    // Try alt for team1 — only if alt players are not already locked
+                    $a1 = $this->swapToAlt($t1, $slot2ByPlayer, $lookup);
+                    if ($a1 !== null) {
+                        if (!isset($lockedPlayers[$a1['player1']]) &&
+                            !isset($lockedPlayers[$a1['player2']])) {
+                            $t1 = $a1;
+                            $altLabel = '2nd partner';
+                        }
+                        // else: keep slot-1 to avoid duplicate
                     }
 
-                    $matches[] = [
-                        'team1_id'    => $t1['id'],
-                        'team1'       => $t1['player1'] . ' / ' . $t1['player2'],
-                        'team2_id'    => $t2['id'],
-                        'team2'       => $t2['player1'] . ' / ' . $t2['player2'],
-                        'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
-                        'alt_partner' => $altLabel,
-                        'is_bye'      => false,
-                    ];
-                    $courtNum++;
-                    $byeDeficit[$id1] += 1;
-                    $byeDeficit[$id2] += 1;
+                    // Try alt for team2 — only if alt players are not already locked
+                    $a2 = $this->swapToAlt($t2, $slot2ByPlayer, $lookup);
+                    if ($a2 !== null) {
+                        if (!isset($lockedPlayers[$a2['player1']]) &&
+                            !isset($lockedPlayers[$a2['player2']]) &&
+                            // Also ensure alt-2 players don't clash with the (possibly already-swapped) t1
+                            $a2['player1'] !== $t1['player1'] && $a2['player1'] !== $t1['player2'] &&
+                            $a2['player2'] !== $t1['player1'] && $a2['player2'] !== $t1['player2']) {
+                            $t2 = $a2;
+                            $altLabel = $altLabel ? 'Alt partners' : '2nd partner';
+                        }
+                    }
                 }
 
-                // Bye team gets a court — displayed as "Bye or Singles"
+                // Lock both resolved players for the rest of this round
+                $lockedPlayers[$t1['player1']] = true;
+                $lockedPlayers[$t1['player2']] = true;
+                $lockedPlayers[$t2['player1']] = true;
+                $lockedPlayers[$t2['player2']] = true;
+
+                $resolvedPairs[] = [$t1, $t2, $altLabel];
+            }
+
+            // ── Phase 2: emit matches ─────────────────────────────────────────────
+            foreach ($resolvedPairs as [$t1, $t2, $altLabel]) {
+                $matches[] = [
+                    'team1_id'    => $t1['id'],
+                    'team1'       => $t1['player1'] . ' / ' . $t1['player2'],
+                    'team2_id'    => $t2['id'],
+                    'team2'       => $t2['player1'] . ' / ' . $t2['player2'],
+                    'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
+                    'alt_partner' => $altLabel,
+                    'is_bye'      => false,
+                ];
+                $courtNum++;
+
+                if ($isOdd) {
+                    $byeDeficit[$t1['id']] = ($byeDeficit[$t1['id']] ?? 0) + 1;
+                    $byeDeficit[$t2['id']] = ($byeDeficit[$t2['id']] ?? 0) + 1;
+                }
+            }
+
+            // Bye team gets a court
+            if ($isOdd && $byeId !== null) {
                 $byeTeam = $lookup[$byeId] ?? null;
                 if ($byeTeam) {
                     $matches[] = [
@@ -453,36 +527,7 @@ class DrawEngine
                         'is_bye'      => true,
                     ];
                 }
-                $byeDeficit[$byeId] -= 1;
-
-            } else {
-                // Even count — standard circle method
-                $pairs = $this->circleMethodPairs($ids, $r, $n);
-
-                foreach ($pairs as [$id1, $id2]) {
-                    $t1 = $lookup[$id1] ?? null;
-                    $t2 = $lookup[$id2] ?? null;
-                    if (!$t1 || !$t2) continue;
-
-                    $altLabel = '';
-                    if ($useAlt) {
-                        $a1 = $this->swapToAlt($t1, $slot2ByPlayer, $lookup);
-                        $a2 = $this->swapToAlt($t2, $slot2ByPlayer, $lookup);
-                        if ($a1) { $t1 = $a1; $altLabel = '2nd partner'; }
-                        if ($a2) { $t2 = $a2; $altLabel = $altLabel ? 'Alt partners' : '2nd partner'; }
-                    }
-
-                    $matches[] = [
-                        'team1_id'    => $t1['id'],
-                        'team1'       => $t1['player1'] . ' / ' . $t1['player2'],
-                        'team2_id'    => $t2['id'],
-                        'team2'       => $t2['player1'] . ' / ' . $t2['player2'],
-                        'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
-                        'alt_partner' => $altLabel,
-                        'is_bye'      => false,
-                    ];
-                    $courtNum++;
-                }
+                $byeDeficit[$byeId] = ($byeDeficit[$byeId] ?? 0) - 1;
             }
 
             $roundsOut[$roundNum] = $matches;
