@@ -242,27 +242,74 @@
         });
     });
 
-    // ── Division select: update border colour class on change ─────────────────
+    // ── Division select: update border colour and AJAX-save on change ──────────
     window.onDivisionChange = function (selectEl) {
         const bandClasses = ['division-band-4p','division-band-35','division-band-30','division-band-25','division-band-u25'];
         bandClasses.forEach(c => selectEl.classList.remove(c));
-        if (selectEl.value) {
-            selectEl.classList.add('division-' + selectEl.value);
-        }
+        if (selectEl.value) selectEl.classList.add('division-' + selectEl.value);
         selectEl.classList.add('division-manual');
 
-        // Update the source indicator label
+        // Update source indicator
         const srcSpan = selectEl.closest('td')?.querySelector('.division-src');
         if (srcSpan) srcSpan.textContent = '✎';
 
-        // Update the ATTENDEES mirror so partner dropdowns stay accurate
+        // Mirror into ATTENDEES for partner dropdown labels
         const row       = selectEl.closest('tr');
         const playerIdx = row ? parseInt(row.dataset.playerIdx) : null;
         if (playerIdx !== null && typeof ATTENDEES !== 'undefined') {
             const a = ATTENDEES.find(x => x.idx === playerIdx);
             if (a) a.skill_band = selectEl.value;
         }
+
+        // AJAX save — does not depend on the main form
+        saveField(playerIdx, 'division', selectEl.value, selectEl);
     };
+
+    // ── DUPR input: style when a value is entered, AJAX-save on change ─────────
+    window.onDuprChange = function (inputEl) {
+        const val     = inputEl.value.trim();
+        const isValid = val !== '' && !isNaN(parseFloat(val)) && parseFloat(val) > 0;
+        inputEl.classList.toggle('has-value', isValid);
+        inputEl.style.borderColor = (!isValid && val !== '') ? 'var(--red)' : '';
+
+        const row       = inputEl.closest('tr');
+        const playerIdx = row ? parseInt(row.dataset.playerIdx) : null;
+
+        // Mirror into ATTENDEES
+        if (playerIdx !== null && typeof ATTENDEES !== 'undefined') {
+            const a = ATTENDEES.find(x => x.idx === playerIdx);
+            if (a) a.dupr = isValid ? parseFloat(val) : null;
+        }
+
+        // Only save valid values (or intentionally blank ones)
+        if (isValid || val === '') {
+            saveField(playerIdx, 'dupr', val, inputEl);
+        }
+    };
+
+    // ── Generic AJAX field save ────────────────────────────────────────────────
+    function saveField(playerIdx, field, value, el) {
+        if (playerIdx === null || playerIdx < 0) return;
+
+        const body = new URLSearchParams({
+            action: 'save_field',
+            idx:    playerIdx,
+            field:  field,
+            value:  value,
+        });
+
+        fetch('index.php', { method: 'POST', body })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.ok) {
+                    console.warn('Field save failed:', data.error);
+                }
+            })
+            .catch(err => {
+                // Non-critical — the main form will still carry the value
+                console.warn('Field save error:', err);
+            });
+    }
 
     // Initialise division selects on load (apply colour classes)
     document.querySelectorAll('.division-select').forEach(sel => {
@@ -272,27 +319,6 @@
             sel.classList.add('division-manual');
         }
     });
-
-    // ── DUPR input: style when a value is entered ─────────────────────────────
-    window.onDuprChange = function (inputEl) {
-        const val = inputEl.value.trim();
-        const isValid = val !== '' && !isNaN(parseFloat(val)) && parseFloat(val) > 0;
-        inputEl.classList.toggle('has-value', isValid);
-
-        if (!isValid && val !== '') {
-            inputEl.style.borderColor = 'var(--red)';
-        } else {
-            inputEl.style.borderColor = '';
-        }
-
-        // Update ATTENDEES mirror
-        const row       = inputEl.closest('tr');
-        const playerIdx = row ? parseInt(row.dataset.playerIdx) : null;
-        if (playerIdx !== null && typeof ATTENDEES !== 'undefined') {
-            const a = ATTENDEES.find(x => x.idx === playerIdx);
-            if (a) a.dupr = isValid ? parseFloat(val) : null;
-        }
-    };
 
     // Initialise DUPR inputs on load
     document.querySelectorAll('.dupr-input').forEach(inp => {

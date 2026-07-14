@@ -84,16 +84,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $p['manual_partner2']   ??= null;
             }
             unset($p);
+
+            // ── Division overrides ─────────────────────────────────────────
             $divisionOverrides = $_POST['player_division'] ?? [];
             foreach ($divisionOverrides as $playerIdx => $divVal) {
                 $playerIdx = (int)$playerIdx;
                 if (!isset($parsedData[$playerIdx])) continue;
                 $divVal = trim($divVal);
                 if ($divVal !== '') {
-                    $parsedData[$playerIdx]['skill_band']     = $divVal;
-                    // Update numeric skill to the midpoint of the chosen band
-                    $parsedData[$playerIdx]['skill']          = skillBandMidpoint($divVal);
-                    $parsedData[$playerIdx]['skill_raw']      = skillBandDisplay($divVal);
+                    $parsedData[$playerIdx]['skill_band']      = $divVal;
+                    $parsedData[$playerIdx]['skill']           = skillBandMidpoint($divVal);
+                    $parsedData[$playerIdx]['skill_raw']       = skillBandDisplay($divVal);
                     $parsedData[$playerIdx]['division_manual'] = true;
                 }
             }
@@ -104,7 +105,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $playerIdx = (int)$playerIdx;
                 if (!isset($parsedData[$playerIdx])) continue;
                 $dupr = trim($dupr);
-                // Accept blank (clear), or a positive number
                 if ($dupr === '' || is_numeric($dupr)) {
                     $parsedData[$playerIdx]['dupr'] = $dupr === '' ? null : (float)$dupr;
                 }
@@ -124,9 +124,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!isset($parsedData[$playerIdx])) continue;
 
                 if ($partnerIdx === 'auto' || $partnerIdx === '') {
-                    $parsedData[$playerIdx]['manual_partner']  = null;
-                    $parsedData[$playerIdx]['partner_matched'] = false;
-                    $parsedData[$playerIdx]['partner_resolved']= null;
+                    $parsedData[$playerIdx]['manual_partner']   = null;
+                    $parsedData[$playerIdx]['partner_matched']  = false;
+                    $parsedData[$playerIdx]['partner_resolved'] = null;
                 } else {
                     $partnerIdx = (int)$partnerIdx;
                     if (!isset($parsedData[$partnerIdx])) continue;
@@ -141,10 +141,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            $_SESSION['parsed_data'] = $parsedData;
+            $_SESSION['parsed_data']         = $parsedData;
             $_SESSION['scroll_to_configure'] = true;
         }
-        // Fall through — re-render with updated data
+
+        // PRG: redirect to avoid re-POST on browser refresh
+        header('Location: index.php');
+        exit;
+    }
+
+    // ── 2b. AJAX: save a single field (division or DUPR) ─────────────────────
+    // Called via fetch() on each field change — keeps the main form payload small
+    if ($action === 'save_field') {
+        header('Content-Type: application/json');
+        $parsedData = $_SESSION['parsed_data'] ?? null;
+        if (!$parsedData) { echo json_encode(['ok' => false, 'error' => 'No session data']); exit; }
+
+        $idx   = (int)($_POST['idx']   ?? -1);
+        $field = $_POST['field'] ?? '';
+        $value = trim($_POST['value'] ?? '');
+
+        if (!isset($parsedData[$idx])) {
+            echo json_encode(['ok' => false, 'error' => 'Invalid player index']);
+            exit;
+        }
+
+        if ($field === 'division' && $value !== '') {
+            $parsedData[$idx]['skill_band']      = $value;
+            $parsedData[$idx]['skill']           = skillBandMidpoint($value);
+            $parsedData[$idx]['skill_raw']       = skillBandDisplay($value);
+            $parsedData[$idx]['division_manual'] = true;
+        } elseif ($field === 'dupr') {
+            $parsedData[$idx]['dupr'] = ($value !== '' && is_numeric($value)) ? (float)$value : null;
+        } else {
+            echo json_encode(['ok' => false, 'error' => 'Unknown field']);
+            exit;
+        }
+
+        $_SESSION['parsed_data'] = $parsedData;
+        echo json_encode(['ok' => true]);
+        exit;
     }
 
     // ── 3. GENERATE DRAW ─────────────────────────────────────────────────────
@@ -520,8 +556,8 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                         </td>
 
                         <td class="td-division">
-                            <select name="player_division[<?= $i ?>]"
-                                    class="division-select division-<?= $player['skill_band'] ?>"
+                            <select class="division-select division-<?= $player['skill_band'] ?>"
+                                    data-player-idx="<?= $i ?>"
                                     onchange="onDivisionChange(this)">
                                 <option value="band-u25" <?= $player['skill_band'] === 'band-u25' ? 'selected' : '' ?>>Under 2.5</option>
                                 <option value="band-25"  <?= $player['skill_band'] === 'band-25'  ? 'selected' : '' ?>>2.5 – 2.99</option>
@@ -530,19 +566,18 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                                 <option value="band-4p"  <?= $player['skill_band'] === 'band-4p'  ? 'selected' : '' ?>>4.0+</option>
                             </select>
                             <span class="division-src" title="From CSV: <?= htmlspecialchars($player['skill_raw']) ?>">
-                                <?= isset($player['division_manual']) ? '✎' : '↑CSV' ?>
+                                <?= isset($player['division_manual']) && $player['division_manual'] ? '✎' : '↑CSV' ?>
                             </span>
                         </td>
 
                         <td class="td-dupr">
                             <input type="text"
-                                   name="player_dupr[<?= $i ?>]"
                                    class="dupr-input"
+                                   data-player-idx="<?= $i ?>"
                                    value="<?= htmlspecialchars($player['dupr'] ?? '') ?>"
-                                   placeholder="e.g. 3.42"
-                                   maxlength="6"
-                                   pattern="[0-9]+(\.[0-9]{1,2})?"
-                                   title="Enter individual DUPR rating (e.g. 3.42)"
+                                   placeholder="e.g. 3.421"
+                                   maxlength="7"
+                                   title="Enter individual DUPR rating (e.g. 3.421)"
                                    onchange="onDuprChange(this)">
                         </td>
 
@@ -841,7 +876,7 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                     <label class="form-label" for="new_dupr">DUPR Rating <span class="label-optional">(optional)</span></label>
                     <input type="text" id="new_dupr" name="new_dupr"
                            class="form-input" placeholder="e.g. 3.42"
-                           pattern="[0-9]+(\.[0-9]{1,2})?" maxlength="6" autocomplete="off">
+                           maxlength="8" autocomplete="off">
                 </div>
             </div>
 
