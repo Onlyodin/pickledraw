@@ -78,43 +78,56 @@
 
     // ── Partner Select Dropdowns ──────────────────────────────────────────────
     //
-    // ATTENDEES is injected by PHP as a global JS array:
-    //   [{ idx, name, skill_raw, partner_matched }, ...]
+    // State: tracks selections per player per slot so conflict detection works
+    // across both P1 and P2 dropdowns.
     //
-    // State: tracks which player each dropdown has selected so we can
-    // show visual conflict warnings when the same person is picked twice.
+    // selectedPartners[playerIdx][slot] = partnerIdx | 'auto'
+    //   slot: 1 = primary, 2 = secondary
 
-    const selectedPartners = {}; // playerIdx -> partnerIdx string | 'auto'
+    const selectedPartners = {}; // { playerIdx: { 1: val, 2: val } }
+
+    function getSelected(playerIdx, slot) {
+        return (selectedPartners[playerIdx] || {})[slot] || 'auto';
+    }
+    function setSelected(playerIdx, slot, val) {
+        if (!selectedPartners[playerIdx]) selectedPartners[playerIdx] = {};
+        selectedPartners[playerIdx][slot] = val;
+    }
 
     // Initialise state from existing selects on page load
     document.querySelectorAll('.partner-select').forEach(sel => {
         const playerIdx = sel.dataset.playerIdx;
-        selectedPartners[playerIdx] = sel.value;
+        const slot      = parseInt(sel.dataset.slot || '1');
+        setSelected(playerIdx, slot, sel.value);
         applySelectStyle(sel);
     });
 
-    // Called when any partner dropdown changes
+    // Called when any partner dropdown changes (slot 1 or 2)
     window.onPartnerChange = function (selectEl) {
-        const playerIdx  = selectEl.dataset.playerIdx;
-        const chosenIdx  = selectEl.value;
+        const playerIdx = selectEl.dataset.playerIdx;
+        const slot      = parseInt(selectEl.dataset.slot || '1');
+        const chosenIdx = selectEl.value;
 
-        selectedPartners[playerIdx] = chosenIdx;
+        setSelected(playerIdx, slot, chosenIdx);
         applySelectStyle(selectEl);
 
-        // If a real person was chosen, mirror the selection on THEIR row too
-        // (only if their row is still an unmatched dropdown, not a confirmed pair)
+        // Mirror: if a real player chosen, point their corresponding slot back
+        // Only mirror onto P1 slot of the chosen player (to keep it simple and
+        // avoid cascading changes on P2 mirrors)
         if (chosenIdx !== 'auto' && chosenIdx !== '') {
-            const mirrorSel = document.getElementById(`partner_select_${chosenIdx}`);
-            if (mirrorSel) {
-                // Set partner's dropdown to point back at this player
+            const mirrorSel = document.getElementById(
+                slot === 1
+                    ? `partner_select_${chosenIdx}`
+                    : `partner2_select_${chosenIdx}`
+            );
+            if (mirrorSel && mirrorSel.value === 'auto') {
                 mirrorSel.value = playerIdx;
-                selectedPartners[chosenIdx] = playerIdx;
+                setSelected(chosenIdx, parseInt(mirrorSel.dataset.slot || '1'), playerIdx);
                 applySelectStyle(mirrorSel);
                 flashRow(mirrorSel.closest('tr'), 'flash-linked');
             }
         }
 
-        // Warn about conflicts: highlight any other dropdown that also chose chosenIdx
         highlightConflicts();
         flashRow(selectEl.closest('tr'), 'flash-linked');
     };
@@ -125,103 +138,103 @@
     }
 
     function highlightConflicts() {
-        // Build a frequency map of chosen partner indices
+        // Build map: chosenIdx -> list of [playerIdx, slot] that chose them
         const freq = {};
-        Object.entries(selectedPartners).forEach(([pIdx, chosen]) => {
-            if (chosen === 'auto' || chosen === '') return;
-            // Don't count mirrored pairs as conflicts — a↔b is fine
-            freq[chosen] = (freq[chosen] || []);
-            freq[chosen].push(pIdx);
+        document.querySelectorAll('.partner-select').forEach(sel => {
+            const v = sel.value;
+            if (v === 'auto' || v === '') return;
+            if (!freq[v]) freq[v] = [];
+            freq[v].push({ pIdx: sel.dataset.playerIdx, slot: sel.dataset.slot });
         });
 
         document.querySelectorAll('.partner-select').forEach(sel => {
-            const chosen = sel.value;
-            if (chosen === 'auto' || chosen === '') {
-                sel.classList.remove('conflict');
-                return;
-            }
-            const choosers = freq[chosen] || [];
-            // Conflict if more than one non-mirrored player chose the same partner
-            // Mirror: playerA chose playerB AND playerB chose playerA → not a conflict
-            const isMirror = choosers.length === 1 ||
-                (choosers.length === 2 &&
-                    choosers.includes(chosen) &&
-                    choosers.includes(sel.dataset.playerIdx));
+            const v = sel.value;
+            if (v === 'auto' || v === '') { sel.classList.remove('conflict'); return; }
+            const choosers  = freq[v] || [];
+            // Not a conflict if only one chooser, or if it's a mirrored pair
+            const isMirror  = choosers.length <= 1 || (
+                choosers.length === 2 &&
+                choosers.some(c => c.pIdx === v) &&
+                choosers.some(c => c.pIdx === sel.dataset.playerIdx)
+            );
             sel.classList.toggle('conflict', !isMirror && choosers.length > 1);
         });
     }
 
-    // ── Unlink a confirmed pair ───────────────────────────────────────────────
-    // Called by the ✕ button on confirmed pairing rows.
-    // Replaces the static "Paired with X" display with a dropdown for both players,
-    // without a full page reload (client-side only — the form POST will persist changes).
-    window.unlinkPlayer = function (playerIdx) {
+    // ── Unlink a confirmed pair slot ─────────────────────────────────────────
+    // slot: 1 = primary partner, 2 = secondary partner
+    window.unlinkPlayerSlot = function (playerIdx, slot) {
         const row = document.querySelector(`tr[data-player-idx="${playerIdx}"]`);
         if (!row) return;
 
-        const pairingCell = row.querySelector('.td-pairing');
-        if (!pairingCell) return;
+        const slotDiv = row.querySelector(`.pairing-slot[data-slot="${slot}"]`);
+        if (!slotDiv) return;
 
-        // Read hidden input for partner idx
-        const hiddenInput = document.getElementById(`partner_input_${playerIdx}`);
-        const partnerIdx  = hiddenInput ? hiddenInput.value : 'auto';
+        // Get the linked partner index from the hidden input
+        const hiddenId   = slot === 1 ? `partner_input_${playerIdx}` : `partner2_input_${playerIdx}`;
+        const hidden     = document.getElementById(hiddenId);
+        const partnerIdx = hidden ? hidden.value : 'auto';
 
-        // Replace confirmed display with a dropdown
-        pairingCell.innerHTML = buildSelectHTML(playerIdx, 'auto');
-        row.classList.remove('row-matched');
-        row.classList.add('row-unmatched');
+        // Replace the confirmed display with a dropdown
+        const isP2    = slot === 2;
+        const name    = slot === 1 ? `manual_partner[${playerIdx}]` : `manual_partner2[${playerIdx}]`;
+        const id      = slot === 1 ? `partner_select_${playerIdx}` : `partner2_select_${playerIdx}`;
+        const label   = slot === 1 ? 'Select partner 1' : 'Select partner 2';
+        const autoLbl = slot === 1 ? '⟳ Auto-pair' : '— No 2nd partner';
+        const dotCls  = isP2 ? 'style="background:rgba(91,143,255,0.5)"' : 'class="status-dot unmatched"';
+        const selCls  = isP2 ? 'partner-select partner-select-2' : 'partner-select';
 
-        // Re-initialise the new select
-        const newSel = pairingCell.querySelector('.partner-select');
-        if (newSel) {
-            selectedPartners[playerIdx] = 'auto';
-            applySelectStyle(newSel);
-        }
+        const options = (typeof ATTENDEES !== 'undefined')
+            ? ATTENDEES.filter(a => a.idx !== parseInt(playerIdx))
+                .map(a => `<option value="${a.idx}">${escapeHtml(a.name)} (${escapeHtml(a.skill_raw)})</option>`)
+                .join('')
+            : '';
 
-        // Also unlink the partner's row if they're confirmed
-        if (partnerIdx && partnerIdx !== 'auto') {
-            const partnerRow = document.querySelector(`tr[data-player-idx="${partnerIdx}"]`);
-            if (partnerRow) {
-                const partnerCell = partnerRow.querySelector('.td-pairing');
-                if (partnerCell && partnerCell.querySelector('.pairing-confirmed')) {
-                    partnerCell.innerHTML = buildSelectHTML(partnerIdx, 'auto');
-                    partnerRow.classList.remove('row-matched');
-                    partnerRow.classList.add('row-unmatched');
-                    const partnerSel = partnerCell.querySelector('.partner-select');
-                    if (partnerSel) {
-                        selectedPartners[partnerIdx] = 'auto';
-                        applySelectStyle(partnerSel);
-                    }
-                }
-            }
-        }
-    };
-
-    function buildSelectHTML(playerIdx, selectedValue) {
-        if (typeof ATTENDEES === 'undefined') return '';
-
-        const options = ATTENDEES.map(a => {
-            if (a.idx === parseInt(playerIdx)) return '';
-            const sel   = String(a.idx) === String(selectedValue) ? ' selected' : '';
-            const label = `${escapeHtml(a.name)} (${escapeHtml(a.skill_raw)})${a.partner_matched ? ' ✓paired' : ''}`;
-            return `<option value="${a.idx}"${sel}>${label}</option>`;
-        }).join('');
-
-        return `
+        slotDiv.innerHTML = `
+            <span class="pairing-slot-label${isP2 ? ' p2-label' : ''}">P${slot}</span>
             <div class="pairing-select-wrap">
-                <span class="status-dot unmatched"></span>
-                <select name="manual_partner[${playerIdx}]"
-                        id="partner_select_${playerIdx}"
-                        class="partner-select"
+                <span ${dotCls}></span>
+                <select name="${name}" id="${id}"
+                        class="${selCls}"
                         data-player-idx="${playerIdx}"
+                        data-slot="${slot}"
                         onchange="onPartnerChange(this)">
-                    <option value="auto">⟳ Auto-pair by skill</option>
-                    <optgroup label="── Select a partner ──">
+                    <option value="auto">${autoLbl}</option>
+                    <optgroup label="── ${label} ──">
                         ${options}
                     </optgroup>
                 </select>
             </div>`;
-    }
+
+        setSelected(playerIdx, slot, 'auto');
+
+        // Check if both slots are now unmatched → change row class
+        const s1 = getSelected(playerIdx, 1);
+        const s2 = getSelected(playerIdx, 2);
+        if (s1 === 'auto' && s2 === 'auto') {
+            row.classList.remove('row-matched');
+            row.classList.add('row-unmatched');
+        }
+
+        // Unlink the other player's corresponding slot
+        if (partnerIdx && partnerIdx !== 'auto') {
+            const pRow = document.querySelector(`tr[data-player-idx="${partnerIdx}"]`);
+            if (pRow) {
+                // Find which of their slots points back to us and unlink it
+                [1, 2].forEach(s => {
+                    const pHidden = document.getElementById(
+                        s === 1 ? `partner_input_${partnerIdx}` : `partner2_input_${partnerIdx}`
+                    );
+                    if (pHidden && pHidden.value === String(playerIdx)) {
+                        unlinkPlayerSlot(parseInt(partnerIdx), s);
+                    }
+                });
+            }
+        }
+    };
+
+    // Keep old name working for any inline calls still in HTML
+    window.unlinkPlayer = (idx) => unlinkPlayerSlot(idx, 1);
 
     // ── Row flash animation ───────────────────────────────────────────────────
     function flashRow(row, cls) {

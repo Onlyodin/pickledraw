@@ -445,47 +445,68 @@ class CSVParser
      * Resolve partner1 and partner2 for every player.
      *
      * Rules:
-     * - One-way declaration is sufficient.
-     * - Fuzzy matching: "Last First" reversal + substring containment.
-     * - Both partner slots resolved independently.
-     * - A player can be resolved as partner2 of someone if they're already
-     *   partner1 of another (two-partner logic handled in DrawEngine).
+     * - One-way declaration is sufficient: if A names B, both are linked.
+     * - Each player's partner1 and partner2 nominations are processed
+     *   independently — being already matched on partner1 does NOT prevent
+     *   partner2 from being resolved, and does NOT prevent other players from
+     *   being resolved against this player.
+     * - Three-player groups (A names B, B names A+C, C names B):
+     *   A↔B as primary, B↔C as secondary, C↔B as primary — all three resolved.
+     * - A player can appear in both a slot-1 and slot-2 team (DrawEngine handles this).
      */
     public function resolvePartners(array $players): array
     {
-        // Build lookup: normalised_name → index
         $lookup = $this->buildNameLookup($players);
 
-        // Resolve primary partners
+        // First pass: resolve all primary partner1 nominations
         foreach ($players as $i => $p) {
-            if (!$players[$i]['partner_matched'] && $p['partner']) {
-                $j = $this->findMatch($p['partner'], $i, $lookup, $players);
-                if ($j !== null) {
-                    $players[$i]['partner_matched']  = true;
-                    $players[$i]['partner_resolved'] = $players[$j]['name'];
-                    // Mark the other side only if they haven't been matched yet
-                    if (!$players[$j]['partner_matched']) {
-                        $players[$j]['partner_matched']  = true;
-                        $players[$j]['partner_resolved'] = $players[$i]['name'];
-                    }
-                }
+            if (!$p['partner']) continue;
+
+            $j = $this->findMatch($p['partner'], $i, $lookup, $players);
+            if ($j === null) continue;
+
+            // Always record our own resolution
+            if (!$players[$i]['partner_matched']) {
+                $players[$i]['partner_matched']  = true;
+                $players[$i]['partner_resolved'] = $players[$j]['name'];
             }
 
-            // Resolve secondary partner
-            if (!$players[$i]['partner2_matched'] && ($p['partner2'] ?? null)) {
-                $j = $this->findMatch($p['partner2'], $i, $lookup, $players);
-                if ($j !== null) {
-                    $players[$i]['partner2_matched']  = true;
-                    $players[$i]['partner2_resolved'] = $players[$j]['name'];
-                    // Mirror only if the other player hasn't nominated a second partner yet
-                    if (!$players[$j]['partner2_matched'] && !$players[$j]['partner_matched']) {
-                        $players[$j]['partner2_matched']  = true;
-                        $players[$j]['partner2_resolved'] = $players[$i]['name'];
-                    } elseif (!$players[$j]['partner_matched']) {
-                        $players[$j]['partner_matched']  = true;
-                        $players[$j]['partner_resolved'] = $players[$i]['name'];
-                    }
-                }
+            // Mirror onto the other player into their best available slot
+            if (!$players[$j]['partner_matched']) {
+                // Their primary slot is free — fill it
+                $players[$j]['partner_matched']  = true;
+                $players[$j]['partner_resolved'] = $players[$i]['name'];
+            } elseif (!$players[$j]['partner2_matched']
+                      && $players[$j]['partner_resolved'] !== $players[$i]['name']) {
+                // Their primary is taken by someone else — use their secondary slot
+                $players[$j]['partner2_matched']  = true;
+                $players[$j]['partner2_resolved'] = $players[$i]['name'];
+            }
+            // else: already linked to $i — nothing to do
+        }
+
+        // Second pass: resolve all secondary partner2 nominations
+        foreach ($players as $i => $p) {
+            if (!($p['partner2'] ?? null)) continue;
+
+            $j = $this->findMatch($p['partner2'], $i, $lookup, $players);
+            if ($j === null) continue;
+
+            // Record our own partner2 resolution if not yet set
+            if (!$players[$i]['partner2_matched']) {
+                $players[$i]['partner2_matched']  = true;
+                $players[$i]['partner2_resolved'] = $players[$j]['name'];
+            }
+
+            // Mirror onto the other player into their best available slot
+            if (!$players[$j]['partner_matched']) {
+                $players[$j]['partner_matched']  = true;
+                $players[$j]['partner_resolved'] = $players[$i]['name'];
+            } elseif (!$players[$j]['partner2_matched']
+                      && $players[$j]['partner_resolved'] !== $players[$i]['name']
+                      && $players[$j]['partner2_resolved'] !== $players[$i]['name']) {
+                $players[$j]['partner2_matched']  = true;
+                $players[$j]['partner2_resolved'] = $players[$i]['name'];
             }
         }
 

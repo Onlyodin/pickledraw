@@ -141,6 +141,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
+            // ── Partner 2 overrides ────────────────────────────────────────
+            $overrides2 = $_POST['manual_partner2'] ?? [];
+            foreach ($overrides2 as $playerIdx => $partner2Idx) {
+                $playerIdx = (int)$playerIdx;
+                if (!isset($parsedData[$playerIdx])) continue;
+
+                if ($partner2Idx === 'auto' || $partner2Idx === '') {
+                    $parsedData[$playerIdx]['manual_partner2']   = null;
+                    $parsedData[$playerIdx]['partner2_matched']  = false;
+                    $parsedData[$playerIdx]['partner2_resolved'] = null;
+                } else {
+                    $partner2Idx = (int)$partner2Idx;
+                    if (!isset($parsedData[$partner2Idx])) continue;
+
+                    $parsedData[$playerIdx]['manual_partner2']   = $partner2Idx;
+                    $parsedData[$playerIdx]['partner2_matched']  = true;
+                    $parsedData[$playerIdx]['partner2_resolved'] = $parsedData[$partner2Idx]['name'];
+
+                    // Mirror onto partner2 into their best available slot
+                    if (!$parsedData[$partner2Idx]['partner_matched']) {
+                        $parsedData[$partner2Idx]['manual_partner']   = $playerIdx;
+                        $parsedData[$partner2Idx]['partner_matched']  = true;
+                        $parsedData[$partner2Idx]['partner_resolved'] = $parsedData[$playerIdx]['name'];
+                    } elseif (!($parsedData[$partner2Idx]['partner2_matched'] ?? false)) {
+                        $parsedData[$partner2Idx]['manual_partner2']   = $playerIdx;
+                        $parsedData[$partner2Idx]['partner2_matched']  = true;
+                        $parsedData[$partner2Idx]['partner2_resolved'] = $parsedData[$playerIdx]['name'];
+                    }
+                }
+            }
+
             $_SESSION['parsed_data']         = $parsedData;
             $_SESSION['scroll_to_configure'] = true;
         }
@@ -593,46 +624,95 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                         </td>
 
                         <td class="td-pairing">
-                            <?php if ($player['partner_matched']): ?>
-                                <!-- Confirmed match — show name with option to change -->
-                                <div class="pairing-confirmed">
-                                    <span class="status-dot matched"></span>
-                                    <span class="pair-label">
-                                        <?= htmlspecialchars($player['partner_resolved'] ?? $player['partner'] ?? '') ?>
-                                    </span>
-                                    <button type="button" class="btn-unlink"
-                                        onclick="unlinkPlayer(<?= $i ?>)"
-                                        title="Remove this pairing">✕</button>
-                                </div>
-                                <!-- Hidden field preserves the match on submit -->
-                                <input type="hidden"
-                                    name="manual_partner[<?= $i ?>]"
-                                    id="partner_input_<?= $i ?>"
-                                    value="<?= findPartnerIndexInData($parsedData, $player['partner_resolved'] ?? '') ?? 'auto' ?>">
-                            <?php else: ?>
-                                <!-- Unmatched — show dropdown -->
-                                <div class="pairing-select-wrap">
-                                    <span class="status-dot unmatched"></span>
-                                    <select name="manual_partner[<?= $i ?>]"
-                                            id="partner_select_<?= $i ?>"
-                                            class="partner-select"
-                                            data-player-idx="<?= $i ?>"
-                                            onchange="onPartnerChange(this)">
-                                        <option value="auto">⟳ Auto-pair by skill</option>
-                                        <optgroup label="── Select a partner ──">
-                                        <?php foreach ($parsedData as $j => $other): ?>
-                                            <?php if ($j === $i) continue; ?>
-                                            <option value="<?= $j ?>"
-                                                <?= (isset($player['manual_partner']) && $player['manual_partner'] === $j) ? 'selected' : '' ?>>
-                                                <?= htmlspecialchars($other['name']) ?>
-                                                (<?= htmlspecialchars($other['skill_raw']) ?>)
-                                                <?= $other['partner_matched'] ? ' ✓paired' : '' ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                        </optgroup>
-                                    </select>
-                                </div>
-                            <?php endif; ?>
+                            <?php
+                            // ── Partner 1 ──────────────────────────────────
+                            $p1Resolved = $player['partner_resolved'] ?? null;
+                            $p1Idx      = $p1Resolved ? findPartnerIndexInData($parsedData, $p1Resolved) : null;
+                            ?>
+                            <div class="pairing-slot" data-slot="1">
+                                <span class="pairing-slot-label">P1</span>
+                                <?php if ($player['partner_matched'] && $p1Resolved): ?>
+                                    <div class="pairing-confirmed">
+                                        <span class="status-dot matched"></span>
+                                        <span class="pair-label"><?= htmlspecialchars($p1Resolved) ?></span>
+                                        <button type="button" class="btn-unlink"
+                                            onclick="unlinkPlayerSlot(<?= $i ?>, 1)"
+                                            title="Remove primary pairing">✕</button>
+                                    </div>
+                                    <input type="hidden"
+                                        name="manual_partner[<?= $i ?>]"
+                                        id="partner_input_<?= $i ?>"
+                                        value="<?= $p1Idx ?? 'auto' ?>">
+                                <?php else: ?>
+                                    <div class="pairing-select-wrap">
+                                        <span class="status-dot unmatched"></span>
+                                        <select name="manual_partner[<?= $i ?>]"
+                                                id="partner_select_<?= $i ?>"
+                                                class="partner-select"
+                                                data-player-idx="<?= $i ?>"
+                                                data-slot="1"
+                                                onchange="onPartnerChange(this)">
+                                            <option value="auto">⟳ Auto-pair</option>
+                                            <optgroup label="── Select partner 1 ──">
+                                            <?php foreach ($parsedData as $j => $other): ?>
+                                                <?php if ($j === $i) continue; ?>
+                                                <option value="<?= $j ?>"
+                                                    <?= (isset($player['manual_partner']) && $player['manual_partner'] === $j) ? 'selected' : '' ?>>
+                                                    <?= htmlspecialchars($other['name']) ?>
+                                                    (<?= htmlspecialchars($other['skill_raw']) ?>)
+                                                    <?= $other['partner_matched'] ? ' ✓' : '' ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                            </optgroup>
+                                        </select>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+
+                            <?php
+                            // ── Partner 2 ──────────────────────────────────
+                            $p2Resolved = $player['partner2_resolved'] ?? null;
+                            $p2Idx      = $p2Resolved ? findPartnerIndexInData($parsedData, $p2Resolved) : null;
+                            ?>
+                            <div class="pairing-slot pairing-slot-2" data-slot="2">
+                                <span class="pairing-slot-label p2-label">P2</span>
+                                <?php if (($player['partner2_matched'] ?? false) && $p2Resolved): ?>
+                                    <div class="pairing-confirmed">
+                                        <span class="status-dot matched"></span>
+                                        <span class="pair-label"><?= htmlspecialchars($p2Resolved) ?></span>
+                                        <button type="button" class="btn-unlink"
+                                            onclick="unlinkPlayerSlot(<?= $i ?>, 2)"
+                                            title="Remove secondary pairing">✕</button>
+                                    </div>
+                                    <input type="hidden"
+                                        name="manual_partner2[<?= $i ?>]"
+                                        id="partner2_input_<?= $i ?>"
+                                        value="<?= $p2Idx ?? 'auto' ?>">
+                                <?php else: ?>
+                                    <div class="pairing-select-wrap">
+                                        <span class="status-dot" style="background:rgba(91,143,255,0.5)"></span>
+                                        <select name="manual_partner2[<?= $i ?>]"
+                                                id="partner2_select_<?= $i ?>"
+                                                class="partner-select partner-select-2"
+                                                data-player-idx="<?= $i ?>"
+                                                data-slot="2"
+                                                onchange="onPartnerChange(this)">
+                                            <option value="auto">— No 2nd partner</option>
+                                            <optgroup label="── Select partner 2 ──">
+                                            <?php foreach ($parsedData as $j => $other): ?>
+                                                <?php if ($j === $i) continue; ?>
+                                                <option value="<?= $j ?>"
+                                                    <?= (isset($player['manual_partner2']) && $player['manual_partner2'] === $j) ? 'selected' : '' ?>>
+                                                    <?= htmlspecialchars($other['name']) ?>
+                                                    (<?= htmlspecialchars($other['skill_raw']) ?>)
+                                                    <?= ($other['partner2_matched'] ?? false) ? ' ✓' : '' ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                            </optgroup>
+                                        </select>
+                                    </div>
+                                <?php endif; ?>
+                            </div>
                         </td>
                         <td class="td-actions">
                             <button type="button"
