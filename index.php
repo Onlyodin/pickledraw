@@ -876,6 +876,11 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                 <?php if (($team['partner_slot'] ?? 1) === 2): ?>
                     <span class="alt-pair-tag">2nd partner</span>
                 <?php endif; ?>
+                <?php if (!empty($team['trio'])): ?>
+                    <span class="alt-pair-tag" title="<?= htmlspecialchars($team['note']) ?>">
+                        🔁 rotating w/ <?= htmlspecialchars($team['trio'][2]['name']) ?>
+                    </span>
+                <?php endif; ?>
             </div>
             <?php endforeach; ?>
         </div>
@@ -914,6 +919,9 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                         <?php endif; ?>
                         <?php if (!empty($match['alt_partner'])): ?>
                             <span class="alt-round-tag">↕ <?= htmlspecialchars($match['alt_partner']) ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($match['resting'])): ?>
+                            <span class="alt-round-tag" title="Rotating trio — resting this round">💤 <?= htmlspecialchars($match['resting']) ?></span>
                         <?php endif; ?>
                     </div>
                     <div class="match-teams">

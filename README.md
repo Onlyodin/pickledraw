@@ -136,6 +136,11 @@ A free-text field per player for individual DUPR. When both players in a confirm
 | Courts Available | 11 | 1–30 |
 | Skill Divisions | 1 — All play together | 1 / 2 / 3 / 4 / 5 |
  
+A **?** help icon next to "Skill Divisions" (hover or tap) explains what each
+band count does: 1 plays everyone together; 2–4 cut today's field into that
+many equal-width bands across its own skill range (thresholds shift with
+whoever showed up); 5 uses the fixed pickleball rating bands below.
+ 
 ### Skill Division Bands
  
 | Setting | Behaviour |
@@ -160,13 +165,31 @@ When all teams play together (1 division), the division badge and stat bar are h
 ### Cross-Division Pairing
  
 If a division has an **odd number of teams**, the boundary team is paired with the most similarly-skilled team from the adjacent division. This prevents a team going without a match due to an odd division size.
+
+### Court Numbering Across Divisions
+
+Court numbers are handed out **sequentially and packed tight** across
+divisions instead of each division claiming a full block of the "Courts
+Available" setting. A division only consumes as many court numbers as it
+actually uses in a round; the next division continues right after. For
+example, with 11 courts available, a division that only needs 8 matches per
+round gets courts 1–8, and the next division picks up at 9–11 rather than
+jumping to 12. If a division still needs more courts than remain, numbering
+wraps back within its own remaining share rather than colliding with a
+division running concurrently.
  
 ### Bye or Singles
  
-When the **total number of teams is odd** after any cross-division pairing, one team sits out per round. They:
+When the **total number of teams is odd** after any cross-division pairing, one team sits out per round — in Round Robin *and* Single Elimination (an elimination bracket's odd-numbered advancing team is shown too, not silently dropped from the round). They:
 - Are assigned a **real court number** so it isn't wasted
 - Appear as a distinct **"Bye or Singles"** card (muted, dashed border)
 - Are **rotated evenly** — a deficit counter increments for every team that plays and decrements when they sit out, so the bye is distributed as fairly as possible across all rounds
+
+### Rotating Trio (No Full-Draw Byes)
+
+A player with **no partner at all** (nobody named them, and nobody they named exists in the field) can't simply be left off the draw — but they also shouldn't be permanently benched for every round. If at least one *auto-pair* team exists (two players who were themselves matched by closest skill rather than a real declared partnership), that team is reformed into a **3-person rotating trio** with the leftover player: all three share the team's two playing spots, and a different one rests each round (`round number mod 3`), so bench duty cycles fairly instead of falling on one person for the whole event. Match cards show `💤 <name>` for whoever is sitting that round out, and the team chip carries a `🔁 rotating w/ …` tag with a tooltip.
+
+Only if there is truly nobody else to rotate with (no other auto-pair players in the field) does a player end up on the **byes list** — shown as a warning banner above the draw ("N players without a partner — sitting out this draw"). Real, explicitly-declared partnerships are never broken up to form a trio.
  
 ### Two-Partner Alternation
  
@@ -195,17 +218,19 @@ Only PHP's standard `ZipArchive` extension is required (enabled by default on Fe
 - Strips UTF-8 BOM and invisible Unicode characters from headers and cell values before matching
 - Three-pass header resolution: exact → strip trailing `.:/!?` → substring keyword
 - `parsePartnerNames()` splits the partner field into up to two names on comma/semicolon/` and `/` & `
-- `resolvePartners()` — one-way matching sufficient; includes first/last name reversal and substring fallback
+- `resolvePartners()` — one-way matching sufficient; includes first/last name reversal and substring fallback. A partner-2 nomination is never re-linked to the same person already sitting in that player's partner-1 slot (prevents the same pair being built twice when a messy raw field like `"Julie Marks, Rick Wybrew"` has one name fail to match and the other get mirrored back by someone else's declaration)
 - `parseSkillLevel()` — handles bare numbers, `Under X` phrases, and text-only labels
  
 ### DrawEngine.php
  
-- `buildTeams()` — Pass 1: named primary partners (slot 1); Pass 2: named secondary partners (slot 2); Pass 3: auto-pair remaining by closest skill
+- `buildTeams()` — Pass 1: named primary partners (slot 1); Pass 2: named secondary partners (slot 2); Pass 3: auto-pair remaining by closest skill, excluding anyone already seated via Pass 1 *or* Pass 2 so they can't be double-booked or wrongly absorb a genuine odd-one-out
+- `makeTrioTeam()` — when Pass 3 leaves exactly one player with no partner at all, folds them into the most recently auto-paired team as a 3-person rotating unit (see "Rotating Trio" above) instead of leaving them on the byes list; only ever reforms an auto-pair team, never a real declared partnership
 - `groupBySkill()` — routes into 1–5 divisions; `numBands ≤ 1` returns a single `All Teams` pool
-- `buildDraw()` — single-division fast path vs. multi-division with cross-pairing
+- `buildDraw()` — single-division fast path vs. multi-division with cross-pairing; `remainingCourts()` / `nextCourtOffset()` pack court numbers sequentially across divisions instead of each claiming a full block of the court count
 - `borrowTeamFromAdjacent()` — finds the closest-skill team in an adjacent division when a division has an odd count
-- `buildRoundRobin()` — circle method; odd-team bye rotation via deficit counter; alt-partner swapping on even rounds
+- `buildRoundRobin()` — circle method; odd-team bye rotation via deficit counter; alt-partner swapping on even rounds; rotating-trio teams keep one stable ID across rounds but resolve which 2 of the 3 players are active each round (`round % 3`)
 - `circleMethodPairs()` — stateless pair generation for any round index, avoids re-simulating prior rotations
+- `buildElimination()` — an odd bracket's automatically-advancing team is still emitted as a "Bye or Singles" match card for that round instead of being dropped from the display
 
 
 ---

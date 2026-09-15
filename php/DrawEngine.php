@@ -116,14 +116,57 @@ class DrawEngine
             $teams[] = $this->makeTeam($p1, $p2, false, 1);
         }
 
-        // Odd player out — no partner available at all. Track them
-        // separately as a bye rather than forcing them onto a fake team;
-        // generateDraw() surfaces this list so the UI can flag it.
-        foreach ($remaining as $solo) {
-            $this->unpairedPlayers[] = $solo['name'];
+        // Odd player out — no partner available at all. Rather than bench
+        // them for every round of the draw, fold them into the most
+        // recently auto-paired team (if one exists) as a rotating trio: all
+        // three share the team's two playing spots, so bench duty cycles
+        // between them instead of landing on one person permanently. We
+        // only ever do this to an auto-pair team (explicit_pair === false)
+        // — a real declared partnership is never broken up for this.
+        if (!empty($remaining)) {
+            $solo        = $remaining[0];
+            $autoPairIdx = null;
+            for ($k = count($teams) - 1; $k >= 0; $k--) {
+                if (($teams[$k]['explicit_pair'] ?? true) === false) {
+                    $autoPairIdx = $k;
+                    break;
+                }
+            }
+
+            if ($autoPairIdx !== null) {
+                $teams[$autoPairIdx] = $this->makeTrioTeam($teams[$autoPairIdx], $solo);
+            } else {
+                $this->unpairedPlayers[] = $solo['name'];
+            }
         }
 
         return $teams;
+    }
+
+    /**
+     * Fold a genuinely partner-less player into an existing auto-paired
+     * team to form a 3-person rotating unit, instead of leaving that player
+     * benched for the entire draw. buildRoundRobin() rotates which one of
+     * the three sits out each round so bench duty is shared fairly.
+     */
+    private function makeTrioTeam(array $pairTeam, array $soloPlayer): array
+    {
+        $trio = [
+            ['name' => $pairTeam['player1'], 'skill' => $pairTeam['skill1']],
+            ['name' => $pairTeam['player2'], 'skill' => $pairTeam['skill2']],
+            ['name' => $soloPlayer['name'],  'skill' => $soloPlayer['skill']],
+        ];
+
+        $team                  = $pairTeam;
+        $team['avg_skill']     = round(array_sum(array_column($trio, 'skill')) / 3, 2);
+        $team['combined_dupr'] = null; // composition changes round to round
+        $team['note']          = sprintf(
+            'Rotating trio: %s, %s & %s share two spots each round so nobody sits out the whole draw.',
+            $trio[0]['name'], $trio[1]['name'], $trio[2]['name']
+        );
+        $team['trio']          = $trio;
+
+        return $team;
     }
 
     private function makeTeam(array $p1, array $p2, bool $explicit = true, int $partnerSlot = 1): array
@@ -405,6 +448,14 @@ class DrawEngine
             $lookup[$t['id']] = $t;
         }
 
+        // Rotating trio teams (see makeTrioTeam()) keep one stable team id
+        // across all rounds; only which 2 of the 3 players are "active" for
+        // a given round changes. That's resolved fresh each round below.
+        $trioIds = [];
+        foreach ($lookup as $id => $t) {
+            if (!empty($t['trio'])) $trioIds[] = $id;
+        }
+
         $slot2ByPlayer = [];
         foreach ($altTeams as $t) {
             $slot2ByPlayer[$t['player1']] = $t['id'];
@@ -429,6 +480,25 @@ class DrawEngine
             $useAlt   = ($roundNum % 2 === 0) && !empty($altTeams);
             $matches  = [];
             $courtNum = $courtOffset;
+
+            // Rotate any trio teams: pick which 2 of the 3 players are
+            // "on" for this round so bench duty cycles between all three
+            // instead of always falling on the same person.
+            foreach ($trioIds as $tid) {
+                $trio      = $lookup[$tid]['trio'];
+                $sitOutIdx = $r % 3;
+                $playing   = [];
+                unset($lookup[$tid]['sitting_out']);
+                foreach ($trio as $idx => $person) {
+                    if ($idx === $sitOutIdx) {
+                        $lookup[$tid]['sitting_out'] = $person['name'];
+                    } else {
+                        $playing[] = $person['name'];
+                    }
+                }
+                $lookup[$tid]['player1'] = $playing[0];
+                $lookup[$tid]['player2'] = $playing[1];
+            }
 
             // Determine base pairs for this round
             if ($isOdd) {
@@ -519,6 +589,7 @@ class DrawEngine
 
             // ── Phase 2: emit matches ─────────────────────────────────────────────
             foreach ($resolvedPairs as [$t1, $t2, $altLabel]) {
+                $resting = array_filter([$t1['sitting_out'] ?? null, $t2['sitting_out'] ?? null]);
                 $matches[] = [
                     'team1_id'    => $t1['id'],
                     'team1'       => $t1['player1'] . ' / ' . $t1['player2'],
@@ -527,6 +598,7 @@ class DrawEngine
                     'court'       => (($courtNum - $courtOffset) % $courts) + $courtOffset,
                     'alt_partner' => $altLabel,
                     'is_bye'      => false,
+                    'resting'     => implode(', ', $resting),
                 ];
                 $courtNum++;
 
@@ -673,7 +745,7 @@ class DrawEngine
         $roundsOut = [];
 
         // Pool A matches
-        $poolARounds = $this->buildRoundRobin($poolA, $rounds, intdiv($courts, 2), $courtOffset);
+        $poolARounds = $this->buildRoundRobin($poolA, [], $rounds, intdiv($courts, 2), $courtOffset);
         foreach ($poolARounds as $r => $matches) {
             foreach ($matches as &$m) {
                 $m['pool'] = 'Pool A';
@@ -682,7 +754,7 @@ class DrawEngine
         }
 
         // Pool B matches (offset courts)
-        $poolBRounds = $this->buildRoundRobin($poolB, $rounds, intdiv($courts, 2), $courtOffset + intdiv($courts, 2));
+        $poolBRounds = $this->buildRoundRobin($poolB, [], $rounds, intdiv($courts, 2), $courtOffset + intdiv($courts, 2));
         foreach ($poolBRounds as $r => $matches) {
             foreach ($matches as &$m) {
                 $m['pool'] = 'Pool B';
