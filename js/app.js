@@ -516,6 +516,45 @@
 
     initCourtInputs();
 
+    // ── Help icons (click/tap toggle; CSS handles hover) ───────────────────────
+    document.querySelectorAll('.help-icon[data-help-target]').forEach(btn => {
+        const popover = document.getElementById(btn.dataset.helpTarget);
+        if (!popover) return;
+
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const isOpen = !popover.hidden;
+            document.querySelectorAll('.help-popover').forEach(p => p.hidden = true);
+            document.querySelectorAll('.help-icon').forEach(b => {
+                b.classList.remove('is-active');
+                b.setAttribute('aria-expanded', 'false');
+            });
+            if (!isOpen) {
+                popover.hidden = false;
+                btn.classList.add('is-active');
+                btn.setAttribute('aria-expanded', 'true');
+            }
+        });
+    });
+
+    document.addEventListener('click', e => {
+        if (e.target.closest('.help-popover') || e.target.closest('.help-icon')) return;
+        document.querySelectorAll('.help-popover').forEach(p => p.hidden = true);
+        document.querySelectorAll('.help-icon').forEach(b => {
+            b.classList.remove('is-active');
+            b.setAttribute('aria-expanded', 'false');
+        });
+    });
+
+    document.addEventListener('keydown', e => {
+        if (e.key !== 'Escape') return;
+        document.querySelectorAll('.help-popover').forEach(p => p.hidden = true);
+        document.querySelectorAll('.help-icon').forEach(b => {
+            b.classList.remove('is-active');
+            b.setAttribute('aria-expanded', 'false');
+        });
+    });
+
     // ── Ctrl+Enter submits active form ────────────────────────────────────────
     document.querySelectorAll('form').forEach(form => {
         form.addEventListener('keydown', e => {

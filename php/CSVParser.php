@@ -492,8 +492,13 @@ class CSVParser
             $j = $this->findMatch($p['partner2'], $i, $lookup, $players);
             if ($j === null) continue;
 
-            // Record our own partner2 resolution if not yet set
-            if (!$players[$i]['partner2_matched']) {
+            // Record our own partner2 resolution if not yet set — but never
+            // re-link to the same person already sitting in our primary slot
+            // (e.g. a raw field like "Julie Marks, Rick Wybrew" where the
+            // first name fails to match and the second gets mirrored back
+            // into our primary slot by someone else's declaration first).
+            if (!$players[$i]['partner2_matched']
+                && $players[$i]['partner_resolved'] !== $players[$j]['name']) {
                 $players[$i]['partner2_matched']  = true;
                 $players[$i]['partner2_resolved'] = $players[$j]['name'];
             }

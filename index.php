@@ -37,6 +37,7 @@ function findPartnerIndexInData(array $parsedData, string $name): ?int {
 $error      = '';
 $teams      = [];
 $draws      = [];
+$byes       = [];
 $parsedData = null;
 $warnings   = [];
 
@@ -65,6 +66,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['column_map']   = $parser->getLastColumnMap();
                 $_SESSION['draws']        = [];
                 $_SESSION['teams']        = [];
+                $_SESSION['byes']         = [];
             } catch (Exception $e) {
                 $error = 'Import error: ' . $e->getMessage();
             }
@@ -231,8 +233,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
                 $teams = $result['teams'];
                 $draws = $result['draws'];
+                $byes  = $result['byes'] ?? [];
                 $_SESSION['teams'] = $teams;
                 $_SESSION['draws'] = $draws;
+                $_SESSION['byes']  = $byes;
             } catch (Exception $e) {
                 $error = 'Draw error: ' . $e->getMessage();
             }
@@ -317,6 +321,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['parsed_data'] = $parsedData;
             $_SESSION['draws']       = [];
             $_SESSION['teams']       = [];
+            $_SESSION['byes']        = [];
         }
     }
 
@@ -366,6 +371,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['parsed_data'] = $parsedData;
             $_SESSION['draws']       = [];
             $_SESSION['teams']       = [];
+            $_SESSION['byes']        = [];
         }
     }
 
@@ -375,6 +381,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 if (empty($teams) && !empty($_SESSION['teams'])) {
     $teams = $_SESSION['teams'];
     $draws = $_SESSION['draws'] ?? [];
+    $byes  = $_SESSION['byes']  ?? [];
 }
 if (empty($parsedData) && !empty($_SESSION['parsed_data'])) {
     $parsedData = $_SESSION['parsed_data'];
@@ -782,7 +789,19 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                 <input type="number" name="courts" value="11" min="1" max="30" class="form-input">
             </div>
             <div class="setting-card">
-                <label class="form-label">Skill Divisions</label>
+                <div class="form-label-row">
+                    <label class="form-label">Skill Divisions</label>
+                    <button type="button" class="help-icon" data-help-target="skillDivisionsHelp"
+                            aria-label="How skill divisions are split" aria-expanded="false">?</button>
+                    <div class="help-popover" id="skillDivisionsHelp" role="tooltip" hidden>
+                        <p><strong>1</strong> — every team plays in one draw together, no split.</p>
+                        <p><strong>2–4</strong> — teams are ranked by average skill/DUPR and cut into that many
+                            equal-width bands across today's field, e.g. "Division A" is the top band. Band
+                            thresholds shift with whoever showed up, they aren't fixed ratings.</p>
+                        <p><strong>5</strong> — fixed pickleball rating bands regardless of field: A 4.0+,
+                            B 3.5–3.99, C 3.0–3.49, D 2.5–2.99, E Under 2.5.</p>
+                    </div>
+                </div>
                 <select name="skill_bands" class="form-select">
                     <option value="1" selected>1 — All play together</option>
                     <option value="2">2 — A / B</option>
@@ -819,6 +838,13 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
             <a href="export_docx.php" class="btn-ghost btn-word">📄 Export Word</a>
         </div>
     </div>
+
+    <?php if (!empty($byes)): ?>
+    <div class="alert alert-warn">
+        ⚠ <?= count($byes) ?> player<?= count($byes) === 1 ? '' : 's' ?> without a partner —
+        sitting out this draw: <strong><?= htmlspecialchars(implode(', ', $byes)) ?></strong>
+    </div>
+    <?php endif; ?>
 
     <?php $singleDivision = count($draws) === 1; ?>
     <?php foreach ($draws as $divName => $divData): ?>

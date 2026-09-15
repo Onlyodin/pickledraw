@@ -8,6 +8,7 @@ class DrawEngine
     private array $players;
     private array $teams = [];
     private int   $teamCounter = 1;
+    private array $unpairedPlayers = []; // names with no partner at all — sitting out
 
     public function __construct(array $players)
     {
@@ -36,6 +37,7 @@ class DrawEngine
         return [
             'teams' => $this->teams,
             'draws' => $draws,
+            'byes'  => $this->unpairedPlayers,
         ];
     }
 
@@ -92,9 +94,13 @@ class DrawEngine
         }
 
         // --- Pass 3: auto-pair remaining unpaired players by closest skill ---
+        // A player already seated via a secondary-slot team (Pass 2) has a
+        // team to play on and must NOT be pulled back into the fallback pool
+        // — otherwise they get double-booked with a stranger and, worse,
+        // silently absorb what should have been the genuine odd-one-out bye.
         $remaining = [];
         foreach ($this->players as $i => $p) {
-            if (!in_array($i, $paired)) $remaining[$i] = $p;
+            if (!in_array($i, $paired) && !in_array($i, $paired2)) $remaining[$i] = $p;
         }
         uasort($remaining, fn($a, $b) => $b['skill'] <=> $a['skill']);
         $remaining = array_values($remaining);
@@ -110,26 +116,11 @@ class DrawEngine
             $teams[] = $this->makeTeam($p1, $p2, false, 1);
         }
 
-        // Odd player out → bye
-        if (!empty($remaining)) {
-            $solo = $remaining[0];
-            if (!empty($teams)) {
-                $teams[count($teams) - 1]['note'] = 'Bye: ' . $solo['name'];
-            } else {
-                $teams[] = [
-                    'id'             => $this->teamCounter++,
-                    'player1'        => $solo['name'],
-                    'player2'        => '— BYE —',
-                    'skill1'         => $solo['skill'],
-                    'skill2'         => 0,
-                    'combined_skill' => $solo['skill'],
-                    'avg_skill'      => $solo['skill'],
-                    'combined_dupr'  => null,
-                    'explicit_pair'  => false,
-                    'partner_slot'   => 1,
-                    'note'           => 'Solo player awaiting partner',
-                ];
-            }
+        // Odd player out — no partner available at all. Track them
+        // separately as a bye rather than forcing them onto a fake team;
+        // generateDraw() surfaces this list so the UI can flag it.
+        foreach ($remaining as $solo) {
+            $this->unpairedPlayers[] = $solo['name'];
         }
 
         return $teams;
@@ -253,10 +244,11 @@ class DrawEngine
                     $draws[$divName]['rounds'][1] = [['note' => 'Only one team — awaiting more players.']];
                     continue;
                 }
+                $availableCourts = $this->remainingCourts($courts, $courtCounter);
                 $draws[$divName]['rounds'] = $format === 'elimination'
-                    ? $this->buildElimination($teams, $courts, $courtCounter)
-                    : $this->buildPools($teams, $rounds, $courts, $courtCounter);
-                $courtCounter += $courts;
+                    ? $this->buildElimination($teams, $availableCourts, $courtCounter)
+                    : $this->buildPools($teams, $rounds, $availableCourts, $courtCounter);
+                $courtCounter = $this->nextCourtOffset($draws[$divName]['rounds'], $courtCounter);
             }
             return $draws;
         }
@@ -293,15 +285,46 @@ class DrawEngine
                     }
                 }
 
+                $availableCourts = $this->remainingCourts($courts, $courtCounter);
                 $draws[$divNames[$d]] = $this->makeDivisionEntry(array_values($divArrays[$d]));
                 $draws[$divNames[$d]]['rounds'] = $this->buildRoundRobin(
-                    $baseTeams, $altTeams, $rounds, $courts, $courtCounter
+                    $baseTeams, $altTeams, $rounds, $availableCourts, $courtCounter
                 );
-                $courtCounter += $courts;
+                $courtCounter = $this->nextCourtOffset($draws[$divNames[$d]]['rounds'], $courtCounter);
             }
         }
 
         return $draws;
+    }
+
+    /**
+     * How many courts remain for the next division, given how many numbers
+     * have already been handed out. Once the pool of physical courts is
+     * exhausted, division numbering starts reusing the full range again.
+     */
+    private function remainingCourts(int $totalCourts, int $courtCounter): int
+    {
+        $remaining = $totalCourts - ($courtCounter - 1);
+        return $remaining >= 1 ? $remaining : $totalCourts;
+    }
+
+    /**
+     * Scans the matches actually produced for a division and returns the
+     * next free court number — i.e. one past the highest court number used.
+     * This keeps divisions packed sequentially (1-8, then 9-11, ...) instead
+     * of always skipping ahead by the full court count.
+     */
+    private function nextCourtOffset(array $rounds, int $currentOffset): int
+    {
+        $maxCourt = $currentOffset - 1;
+        foreach ($rounds as $matches) {
+            foreach ($matches as $m) {
+                if (isset($m['court']) && is_numeric($m['court'])) {
+                    $maxCourt = max($maxCourt, (int)$m['court']);
+                }
+            }
+        }
+        return max($maxCourt + 1, $currentOffset);
     }
 
     private function sortByDuprThenSkill(array $teams): array
@@ -593,7 +616,17 @@ class DrawEngine
                 $t2 = $bracket[$i + 1] ?? null;
 
                 if (!$t2) {
-                    // Bye
+                    // Bye — team advances automatically; still shown so the
+                    // player isn't left off the round entirely.
+                    $matches[] = [
+                        'team1_id' => $t1['id'],
+                        'team1'    => $t1['player1'] . ' / ' . $t1['player2'],
+                        'team2_id' => 'BYE',
+                        'team2'    => '',
+                        'court'    => (($court - 1) % $courts) + $courtOffset,
+                        'is_bye'   => true,
+                    ];
+                    $court++;
                     $next[] = $t1;
                     continue;
                 }

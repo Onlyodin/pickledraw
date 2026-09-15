@@ -817,6 +817,68 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+    position: relative;
+}
+
+/* Help icon + popover (skill division explainer, etc.) */
+.form-label-row {
+    display: flex;
+    align-items: center;
+    position: relative;
+}
+
+.help-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.1rem;
+    height: 1.1rem;
+    margin-left: 0.35rem;
+    border-radius: 50%;
+    border: 1px solid var(--muted);
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font-body);
+    font-size: 0.65rem;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    vertical-align: middle;
+    transition: border-color 0.15s, color 0.15s;
+}
+
+.help-icon:hover,
+.help-icon:focus-visible,
+.help-icon.is-active {
+    border-color: var(--accent);
+    color: var(--accent);
+    outline: none;
+}
+
+.help-popover {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 20;
+    width: min(320px, 80vw);
+    margin-top: 0.5rem;
+    padding: 0.85rem 1rem;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: var(--text);
+}
+
+.help-popover[hidden] { display: none; }
+
+.help-popover p + p { margin-top: 0.5rem; }
+
+.help-icon:hover ~ .help-popover[hidden],
+.help-icon:focus-visible ~ .help-popover[hidden] {
+    display: block;
 }
 
 /* ---- Draw Output ---- */
