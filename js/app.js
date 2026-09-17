@@ -516,6 +516,111 @@
 
     initCourtInputs();
 
+    // ── Configure Draw: division summary (teams / byes / court ranges) ─────────
+    // Whenever Skill Divisions is set to something other than "1 — All play
+    // together", ask the server for a preview of how the field splits: how
+    // many teams land in each division, how many players get a bye each
+    // round, and the default court range (higher divisions get the higher
+    // court numbers). Court range inputs the organiser edits by hand are
+    // remembered and resubmitted so a "Courts Available" tweak doesn't wipe
+    // out a manual pin — switching the division count itself does, since the
+    // whole division set changes.
+    const divisionEditedRanges = {}; // divIndex -> { start, end }
+
+    window.onDrawSettingChange = function () {
+        refreshDivisionSummary();
+    };
+
+    function refreshDivisionSummary() {
+        const select    = document.getElementById('skillBandsSelect');
+        const summaryEl = document.getElementById('divisionSummary');
+        if (!select || !summaryEl) return;
+
+        if (select.value === '1') {
+            summaryEl.hidden = true;
+            summaryEl.innerHTML = '';
+            for (const k in divisionEditedRanges) delete divisionEditedRanges[k];
+            return;
+        }
+
+        const body = new URLSearchParams({ action: 'preview_divisions', skill_bands: select.value });
+        Object.entries(divisionEditedRanges).forEach(([idx, range]) => {
+            if (range.start !== '') body.append(`court_start[${idx}]`, range.start);
+            if (range.end   !== '') body.append(`court_end[${idx}]`, range.end);
+        });
+
+        fetch('index.php', { method: 'POST', body })
+            .then(r => r.json())
+            .then(data => {
+                if (!data.ok) { summaryEl.hidden = true; return; }
+                renderDivisionSummary(data.divisions || []);
+            })
+            .catch(() => { summaryEl.hidden = true; });
+    }
+
+    function renderDivisionSummary(divisions) {
+        const summaryEl = document.getElementById('divisionSummary');
+        if (!summaryEl) return;
+
+        if (!divisions.length) {
+            summaryEl.hidden = true;
+            summaryEl.innerHTML = '';
+            return;
+        }
+
+        const rows = divisions.map(div => {
+            const byeText = div.bye_players > 0
+                ? `⚠ ${div.bye_players} player${div.bye_players === 1 ? '' : 's'} (1 team) on bye each round`
+                : '✓ No bye — even teams';
+            const altText = div.alt_teams > 0 ? ` <span class="division-summary-alt">(+${div.alt_teams} w/ 2nd partner)</span>` : '';
+
+            return `
+                <div class="division-summary-row" data-div-idx="${div.index}">
+                    <span class="division-summary-name">${escapeHtml(div.name)}</span>
+                    <span class="division-summary-stat">~${div.base_teams} team${div.base_teams === 1 ? '' : 's'}${altText}</span>
+                    <span class="division-summary-stat division-summary-bye ${div.bye_players > 0 ? 'has-bye' : ''}">${byeText}</span>
+                    <span class="division-summary-courts">
+                        <span class="division-summary-courts-label">Courts</span>
+                        <input type="number" name="court_start[${div.index}]" class="court-range-input"
+                               value="${div.court_start}" min="1" max="99"
+                               data-div-idx="${div.index}" data-role="start"
+                               onchange="onCourtRangeEdit(this)">
+                        <span class="division-summary-dash">–</span>
+                        <input type="number" name="court_end[${div.index}]" class="court-range-input"
+                               value="${div.court_end}" min="1" max="99"
+                               data-div-idx="${div.index}" data-role="end"
+                               onchange="onCourtRangeEdit(this)">
+                    </span>
+                </div>`;
+        }).join('');
+
+        summaryEl.innerHTML = `
+            <h4 class="division-summary-title">Anticipated Divisions</h4>
+            <div class="division-summary-list">${rows}</div>
+            <p class="division-summary-hint">
+                Estimates based on current pairings — the generated draw may shift slightly to balance byes
+                across divisions. Court ranges default to higher divisions on higher-numbered courts;
+                edit a range to pin that division to specific courts.
+            </p>`;
+        summaryEl.hidden = false;
+    }
+
+    window.onCourtRangeEdit = function (inputEl) {
+        const idx = inputEl.dataset.divIdx;
+        const row = inputEl.closest('.division-summary-row');
+        if (!row) return;
+        const startEl = row.querySelector('[data-role="start"]');
+        const endEl   = row.querySelector('[data-role="end"]');
+        divisionEditedRanges[idx] = {
+            start: startEl ? startEl.value.trim() : '',
+            end:   endEl ? endEl.value.trim() : '',
+        };
+    };
+
+    // Restore the summary if the Skill Divisions select comes back non-default
+    // (e.g. browser back/forward cache restoring a previous form state).
+    refreshDivisionSummary();
+
     // ── Help icons (click/tap toggle; CSS handles hover) ───────────────────────
     document.querySelectorAll('.help-icon[data-help-target]').forEach(btn => {
         const popover = document.getElementById(btn.dataset.helpTarget);

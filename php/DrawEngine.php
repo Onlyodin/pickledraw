@@ -20,10 +20,11 @@ class DrawEngine
      */
     public function generateDraw(array $options): array
     {
-        $rounds      = $options['rounds']      ?? 3;
-        $skillBands  = $options['skill_bands'] ?? 3;
-        $format      = $options['format']      ?? 'round_robin';
-        $courts      = $options['courts']      ?? 4;
+        $rounds      = $options['rounds']       ?? 3;
+        $skillBands  = $options['skill_bands']  ?? 3;
+        $format      = $options['format']       ?? 'round_robin';
+        $courts      = $options['courts']       ?? 4;
+        $courtRanges = $options['court_ranges'] ?? [];
 
         $this->teams = $this->buildTeams();
 
@@ -32,13 +33,63 @@ class DrawEngine
         }
 
         $divisions = $this->groupBySkill($skillBands);
-        $draws     = $this->buildDraw($divisions, $rounds, $format, $courts);
+        $draws     = $this->buildDraw($divisions, $rounds, $format, $courts, $courtRanges);
 
         return [
             'teams' => $this->teams,
             'draws' => $draws,
             'byes'  => $this->unpairedPlayers,
         ];
+    }
+
+    /**
+     * Lightweight preview used by Step 2 (Configure Draw) to summarise a
+     * skill-division split before the full draw is generated: anticipated
+     * team count per division, how many players would sit out a bye each
+     * round, and the default court range for that division. Returns []
+     * when $skillBands <= 1 (single-division draws have nothing to preview).
+     */
+    public function previewDivisions(int $skillBands, array $courtRangeOverrides = []): array
+    {
+        $this->teams = $this->buildTeams();
+        $divisions   = $this->groupBySkill($skillBands);
+
+        if (count($divisions) <= 1) {
+            return [];
+        }
+
+        $divNames  = array_keys($divisions);
+        $divArrays = array_values($divisions);
+        $numDivs   = count($divArrays);
+        $courtPlan = $this->planCourtRanges($divisions, $courtRangeOverrides);
+
+        $out = [];
+        for ($d = 0; $d < $numDivs; $d++) {
+            $baseTeams = array_values(array_filter($divArrays[$d], fn($t) => ($t['partner_slot'] ?? 1) === 1));
+            $altTeams  = array_values(array_filter($divArrays[$d], fn($t) => ($t['partner_slot'] ?? 1) === 2));
+
+            $borrowed = false;
+            if (count($baseTeams) % 2 !== 0) {
+                $borrowed = $this->borrowTeamFromAdjacent($baseTeams, $divArrays, $d, $numDivs) !== null;
+            }
+
+            $effectiveBase = count($baseTeams) + ($borrowed ? 1 : 0);
+            $isOdd         = $effectiveBase % 2 !== 0;
+
+            $out[] = [
+                'index'          => $d,
+                'name'           => $divNames[$d],
+                'base_teams'     => count($baseTeams),
+                'alt_teams'      => count($altTeams),
+                'borrowed_a_team'=> $borrowed,
+                'bye_teams'      => $isOdd ? 1 : 0,
+                'bye_players'    => $isOdd ? 2 : 0,
+                'court_start'    => $courtPlan[$d]['offset'],
+                'court_end'      => $courtPlan[$d]['offset'] + $courtPlan[$d]['courts'] - 1,
+            ];
+        }
+
+        return $out;
     }
 
     // -----------------------------------------------------------------------
@@ -274,46 +325,57 @@ class DrawEngine
     //   rotates as evenly as possible across all teams.
     // -----------------------------------------------------------------------
 
-    private function buildDraw(array $divisions, int $rounds, string $format, int $courts): array
+    private function buildDraw(array $divisions, int $rounds, string $format, int $courts, array $courtRangeOverrides = []): array
     {
-        $draws        = [];
-        $courtCounter = 1;
+        $draws    = [];
+        $divNames = array_keys($divisions);
+        $numDivs  = count($divNames);
+        $multi    = $numDivs > 1;
+
+        // Divisions are ordered highest-skill-first (see groupBySkill()). By
+        // default the lowest division gets the lowest court numbers and the
+        // highest division gets the highest court numbers; courtRangeOverrides
+        // (keyed by division index) lets the organiser pin a division to a
+        // specific court range instead.
+        $courtPlan = $multi ? $this->planCourtRanges($divisions, $courtRangeOverrides) : [];
 
         if ($format !== 'round_robin') {
-            foreach ($divisions as $divName => $teams) {
-                $teams = $this->sortByDuprThenSkill($teams);
+            for ($d = 0; $d < $numDivs; $d++) {
+                $divName = $divNames[$d];
+                $teams   = $this->sortByDuprThenSkill($divisions[$divName]);
                 $draws[$divName] = $this->makeDivisionEntry($teams);
+
                 if (count($teams) < 2) {
                     $draws[$divName]['rounds'][1] = [['note' => 'Only one team — awaiting more players.']];
                     continue;
                 }
-                $availableCourts = $this->remainingCourts($courts, $courtCounter);
+
+                $offset = $multi ? $courtPlan[$d]['offset'] : 1;
+                $width  = $multi ? $courtPlan[$d]['courts'] : $courts;
+
                 $draws[$divName]['rounds'] = $format === 'elimination'
-                    ? $this->buildElimination($teams, $availableCourts, $courtCounter)
-                    : $this->buildPools($teams, $rounds, $availableCourts, $courtCounter);
-                $courtCounter = $this->nextCourtOffset($draws[$divName]['rounds'], $courtCounter);
+                    ? $this->buildElimination($teams, $width, $offset)
+                    : $this->buildPools($teams, $rounds, $width, $offset);
             }
             return $draws;
         }
 
         // ── Round Robin ───────────────────────────────────────────────────────
 
-        if (count($divisions) === 1) {
+        if (!$multi) {
             // Single division — simple path
-            $divName   = array_key_first($divisions);
+            $divName   = $divNames[0];
             $allTeams  = $this->sortByDuprThenSkill($divisions[$divName]);
             $baseTeams = array_values(array_filter($allTeams, fn($t) => ($t['partner_slot'] ?? 1) === 1));
             $altTeams  = array_values(array_filter($allTeams, fn($t) => ($t['partner_slot'] ?? 1) === 2));
 
             $draws[$divName] = $this->makeDivisionEntry($allTeams);
             $draws[$divName]['rounds'] = $this->buildRoundRobin(
-                $baseTeams, $altTeams, $rounds, $courts, $courtCounter
+                $baseTeams, $altTeams, $rounds, $courts, 1
             );
         } else {
             // Multiple divisions — cross-pair odd divisions
-            $divNames  = array_keys($divisions);
             $divArrays = array_values($divisions);
-            $numDivs   = count($divArrays);
 
             for ($d = 0; $d < $numDivs; $d++) {
                 $divTeams  = $this->sortByDuprThenSkill($divArrays[$d]);
@@ -328,12 +390,10 @@ class DrawEngine
                     }
                 }
 
-                $availableCourts = $this->remainingCourts($courts, $courtCounter);
                 $draws[$divNames[$d]] = $this->makeDivisionEntry(array_values($divArrays[$d]));
                 $draws[$divNames[$d]]['rounds'] = $this->buildRoundRobin(
-                    $baseTeams, $altTeams, $rounds, $availableCourts, $courtCounter
+                    $baseTeams, $altTeams, $rounds, $courtPlan[$d]['courts'], $courtPlan[$d]['offset']
                 );
-                $courtCounter = $this->nextCourtOffset($draws[$divNames[$d]]['rounds'], $courtCounter);
             }
         }
 
@@ -341,33 +401,37 @@ class DrawEngine
     }
 
     /**
-     * How many courts remain for the next division, given how many numbers
-     * have already been handed out. Once the pool of physical courts is
-     * exhausted, division numbering starts reusing the full range again.
+     * Decide each division's court range. $overrides is [divIndex => ['start'=>int,'end'=>int]]
+     * for any division the organiser pinned manually. Every other division is
+     * packed by default from court 1 upward in reverse skill order — lowest
+     * division first — so the higher a division, the higher its court numbers.
      */
-    private function remainingCourts(int $totalCourts, int $courtCounter): int
+    private function planCourtRanges(array $divisions, array $overrides): array
     {
-        $remaining = $totalCourts - ($courtCounter - 1);
-        return $remaining >= 1 ? $remaining : $totalCourts;
-    }
+        $divNames = array_keys($divisions);
+        $numDivs  = count($divNames);
+        $plan     = [];
+        $offset   = 1;
 
-    /**
-     * Scans the matches actually produced for a division and returns the
-     * next free court number — i.e. one past the highest court number used.
-     * This keeps divisions packed sequentially (1-8, then 9-11, ...) instead
-     * of always skipping ahead by the full court count.
-     */
-    private function nextCourtOffset(array $rounds, int $currentOffset): int
-    {
-        $maxCourt = $currentOffset - 1;
-        foreach ($rounds as $matches) {
-            foreach ($matches as $m) {
-                if (isset($m['court']) && is_numeric($m['court'])) {
-                    $maxCourt = max($maxCourt, (int)$m['court']);
-                }
+        for ($d = $numDivs - 1; $d >= 0; $d--) {
+            if (isset($overrides[$d]['start'], $overrides[$d]['end'])) {
+                $start = max(1, (int)$overrides[$d]['start']);
+                $end   = max($start, (int)$overrides[$d]['end']);
+                $plan[$d] = ['offset' => $start, 'courts' => $end - $start + 1];
+                continue;
             }
+
+            $teamsInDiv = $divisions[$divNames[$d]];
+            $baseCount  = count(array_filter($teamsInDiv, fn($t) => ($t['partner_slot'] ?? 1) === 1));
+            if ($baseCount === 0) $baseCount = count($teamsInDiv);
+
+            $width = max(1, (int)ceil($baseCount / 2));
+            $plan[$d] = ['offset' => $offset, 'courts' => $width];
+            $offset += $width;
         }
-        return max($maxCourt + 1, $currentOffset);
+
+        ksort($plan);
+        return $plan;
     }
 
     private function sortByDuprThenSkill(array $teams): array

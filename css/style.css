@@ -881,6 +881,110 @@ body {
     display: block;
 }
 
+/* Division summary preview (Step 2 — shown once Skill Divisions > 1) */
+.division-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.1rem;
+}
+
+.division-summary[hidden] { display: none; }
+
+.division-summary-title {
+    font-family: var(--font-display);
+    font-size: 1rem;
+    letter-spacing: 0.06em;
+    color: var(--text);
+    margin: 0;
+}
+
+.division-summary-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.division-summary-row {
+    display: grid;
+    grid-template-columns: minmax(110px, auto) minmax(120px, auto) 1fr auto;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.65rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.82rem;
+}
+
+.division-summary-name {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.division-summary-stat { color: var(--text); }
+
+.division-summary-alt {
+    color: var(--blue);
+    font-size: 0.75rem;
+}
+
+.division-summary-bye { color: var(--muted); }
+.division-summary-bye.has-bye { color: var(--amber); }
+
+.division-summary-courts {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+
+.division-summary-courts-label {
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.65rem;
+}
+
+.division-summary-dash { color: var(--muted); }
+
+.court-range-input {
+    width: 3.2rem;
+    padding: 0.25rem 0.35rem;
+    background: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    text-align: center;
+}
+
+.court-range-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.division-summary-hint {
+    font-size: 0.75rem;
+    color: var(--muted);
+    line-height: 1.5;
+    margin: 0;
+}
+
+@media (max-width: 640px) {
+    .division-summary-row {
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+    }
+    .division-summary-courts { margin-left: 0; }
+}
+
 /* ---- Draw Output ---- */
 .draw-actions { margin-left: auto; display: flex; gap: 0.5rem; }
 

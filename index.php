@@ -34,6 +34,22 @@ function findPartnerIndexInData(array $parsedData, string $name): ?int {
     return null;
 }
 
+// Reads manually-specified per-division court ranges from POST, e.g.
+// court_start[0]=1&court_end[0]=4 → [0 => ['start' => 1, 'end' => 4]].
+// A division index is only included once both fields are present and numeric.
+function parseCourtRangeOverrides(array $post): array {
+    $starts    = $post['court_start'] ?? [];
+    $ends      = $post['court_end']   ?? [];
+    $overrides = [];
+    foreach ($starts as $idx => $start) {
+        $idx = (int)$idx;
+        if (!isset($ends[$idx]) || $start === '' || $ends[$idx] === '') continue;
+        if (!is_numeric($start) || !is_numeric($ends[$idx])) continue;
+        $overrides[$idx] = ['start' => (int)$start, 'end' => (int)$ends[$idx]];
+    }
+    return $overrides;
+}
+
 $error      = '';
 $teams      = [];
 $draws      = [];
@@ -216,6 +232,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // ── 2c. AJAX: preview skill-division split (team counts, byes, court ranges) ──
+    if ($action === 'preview_divisions') {
+        header('Content-Type: application/json');
+        $parsedData = $_SESSION['parsed_data'] ?? null;
+        if (!$parsedData) { echo json_encode(['ok' => false, 'error' => 'No session data']); exit; }
+
+        try {
+            $engine     = new DrawEngine($parsedData);
+            $skillBands = (int)($_POST['skill_bands'] ?? 1);
+            $overrides  = parseCourtRangeOverrides($_POST);
+            $divisions  = $engine->previewDivisions($skillBands, $overrides);
+            echo json_encode(['ok' => true, 'divisions' => $divisions]);
+        } catch (Exception $e) {
+            echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+        }
+        exit;
+    }
+
     // ── 3. GENERATE DRAW ─────────────────────────────────────────────────────
     if ($action === 'generate') {
         $parsedData = $_SESSION['parsed_data'] ?? null;
@@ -226,10 +260,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 $engine = new DrawEngine($parsedData);
                 $result = $engine->generateDraw([
-                    'rounds'      => (int)($_POST['rounds'] ?? 8),
-                    'skill_bands' => (int)($_POST['skill_bands'] ?? 1),
-                    'format'      => $_POST['format'] ?? 'round_robin',
-                    'courts'      => (int)($_POST['courts'] ?? 11),
+                    'rounds'       => (int)($_POST['rounds'] ?? 8),
+                    'skill_bands'  => (int)($_POST['skill_bands'] ?? 1),
+                    'format'       => $_POST['format'] ?? 'round_robin',
+                    'courts'       => (int)($_POST['courts'] ?? 11),
+                    'court_ranges' => parseCourtRangeOverrides($_POST),
                 ]);
                 $teams = $result['teams'];
                 $draws = $result['draws'];
@@ -786,7 +821,7 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
             </div>
             <div class="setting-card">
                 <label class="form-label">Courts Available</label>
-                <input type="number" name="courts" value="11" min="1" max="30" class="form-input">
+                <input type="number" name="courts" id="courtsAvailable" value="11" min="1" max="30" class="form-input" onchange="onDrawSettingChange()">
             </div>
             <div class="setting-card">
                 <div class="form-label-row">
@@ -802,7 +837,7 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                             B 3.5–3.99, C 3.0–3.49, D 2.5–2.99, E Under 2.5.</p>
                     </div>
                 </div>
-                <select name="skill_bands" class="form-select">
+                <select name="skill_bands" id="skillBandsSelect" class="form-select" onchange="onDrawSettingChange()">
                     <option value="1" selected>1 — All play together</option>
                     <option value="2">2 — A / B</option>
                     <option value="3">3 — A / B / C</option>
@@ -811,6 +846,8 @@ $allAttendees = $parsedData ? array_map(fn($i, $p) => ['idx' => $i, 'name' => $p
                 </select>
             </div>
         </div>
+
+        <div id="divisionSummary" class="division-summary" hidden></div>
 
         <?php if ($error): ?>
             <div class="alert alert-error"><?= htmlspecialchars($error) ?></div>
